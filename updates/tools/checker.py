@@ -8,6 +8,12 @@ import sys
 import os
 import queue
 import threading
+import json
+import tempfile
+import shutil
+import traceback
+import platform
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -17,7 +23,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFileDialog, QLineEdit, QSpinBox, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QPlainTextEdit, QMessageBox,
+    QPlainTextEdit, QMessageBox, QInputDialog,
 )
 
 from playwright.sync_api import sync_playwright
@@ -320,7 +326,15 @@ class CheckerWindow(QMainWindow):
         self.good_count = 0
         self.bad_count = 0
 
+        self._diagnostic_dir = tempfile.TemporaryDirectory(prefix="shadow_checker_diag_")
+        self._diag_path = Path(self._diagnostic_dir.name)
+        self._diag_jsonl = self._diag_path / "diagnostics.jsonl"
+        self._diag_txt = self._diag_path / "diagnostics.txt"
+        self._diag_count = 0
+        self._diag_secrets = set()
         self.build_ui()
+        self.diagnostic("system", "startup", python=sys.version.split()[0],
+                        os=platform.platform(), target=TARGET_URL)
         self.log("Proxy Runtime ready.")
 
     def panel(self, layout=None):
@@ -328,7 +342,62 @@ class CheckerWindow(QMainWindow):
         panel.setLayout(layout or QVBoxLayout())
         return panel
 
+    def _sanitize(self, value):
+        text = str(value)
+        for secret in sorted(self._diag_secrets, key=len, reverse=True):
+            if secret:
+                text = text.replace(secret, "[REDACTED]")
+        text = re.sub(r"(https?://|socks5h?://)([^/@\s]+)@", r"\1[REDACTED]@", text)
+        return text
+
+    def diagnostic(self, component, event, **fields):
+        try:
+            entry = {"time": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                     "component": component, "event": event,
+                     "data": {str(k): self._sanitize(v) for k, v in fields.items()}}
+            with self._diag_jsonl.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            with self._diag_txt.open("a", encoding="utf-8") as f:
+                f.write(f"{entry['time']} [{component}] {event} "
+                        + json.dumps(entry["data"], ensure_ascii=False) + "\n")
+            self._diag_count += 1
+        except OSError:
+            pass
+
+    def export_diagnostics(self):
+        dest, _ = QFileDialog.getSaveFileName(
+            self, "Export diagnostics (explicit copy)",
+            str(Path.home() / "Desktop" / "shadow_diagnostics.jsonl"),
+            "JSON Lines (*.jsonl);;Text (*.txt)")
+        if not dest:
+            return
+        source = self._diag_txt if dest.lower().endswith(".txt") else self._diag_jsonl
+        try:
+            shutil.copyfile(source, dest)
+            self.log("[DIAGNOSTIC] Exported to: " + dest)
+        except OSError as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+
+    def show_diagnostics(self):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Diagnostic Logs")
+        dialog.setText(f"Temporary diagnostic events: {self._diag_count}\n"
+                       "Automatically deleted on normal program exit.\n"
+                       "Use Export to keep a copy for analysis.")
+        export_button = dialog.addButton("Export JSONL / TXT", QMessageBox.ButtonRole.ActionRole)
+        open_button = dialog.addButton("Open temporary folder", QMessageBox.ButtonRole.ActionRole)
+        dialog.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() == export_button:
+            self.export_diagnostics()
+        elif dialog.clickedButton() == open_button:
+            if sys.platform == "win32":
+                os.startfile(str(self._diag_path))
+            else:
+                self.log("[DIAGNOSTIC] " + str(self._diag_path))
+
     def log(self, message):
+        self.diagnostic("checker", "log", message=message)
         self.logs.appendPlainText(
             f"[{datetime.now():%H:%M:%S}]  {message}"
         )
@@ -348,6 +417,7 @@ class CheckerWindow(QMainWindow):
             ("⟳  Restart", self.restart),
             ("▤  To File", self.open_file),
             ("◎  Proxy Runtime", self.open_proxy_monitor),
+            ("▤  Diagnostic Logs", self.show_diagnostics),
         ]:
             button = QPushButton(name)
             button.setMinimumWidth(125)
@@ -518,6 +588,10 @@ class CheckerWindow(QMainWindow):
             )
             header.addStretch()
 
+            if not is_results:
+                diag_button = QPushButton("▤ Diagnostic Logs")
+                diag_button.clicked.connect(self.show_diagnostics)
+                header.addWidget(diag_button)
             clear = QPushButton("♧  Clear")
             header.addWidget(clear)
             column.addLayout(header)
@@ -809,6 +883,19 @@ class CheckerWindow(QMainWindow):
 
     def runtime_result(self, result):
         self.runtime_history.append(result.copy())
+        proxy_for_diag = result.get("proxy")
+        if proxy_for_diag:
+            for field in ("username", "password"):
+                secret = getattr(proxy_for_diag, field, "")
+                if secret:
+                    self._diag_secrets.add(secret)
+        self.diagnostic("proxy_runtime", "verification_result",
+                        line=result.get("line", ""),
+                        proxy=getattr(proxy_for_diag, "label", "unknown"),
+                        status=result.get("status", ""),
+                        protocol=result.get("protocol", ""),
+                        exit_ip=result.get("exit_ip", ""),
+                        reason=result.get("reason", ""))
         if self.proxy_monitor is not None:
             self.proxy_monitor.add_result(result)
         self.checked_count += 1
@@ -862,6 +949,7 @@ class CheckerWindow(QMainWindow):
 
     def runtime_progress(self, completed, total):
         self.runtime_last_progress = (completed, total)
+        self.diagnostic("proxy_runtime", "progress", completed=completed, total=total)
         if self.proxy_monitor is not None:
             self.proxy_monitor.set_progress(completed, total)
         self.progress_label.setText(
@@ -870,6 +958,8 @@ class CheckerWindow(QMainWindow):
 
     def runtime_finished(self):
         self.runtime_scan_done = True
+        self.diagnostic("proxy_runtime", "scan_finished", good=self.good_count,
+                        bad=self.bad_count, checked=self.checked_count)
         if self.proxy_monitor is not None:
             self.proxy_monitor.mark_finished()
         self.log(
@@ -932,6 +1022,8 @@ class CheckerWindow(QMainWindow):
             )
 
             self.workers.append(worker)
+            self.diagnostic("firefox", "session_assigned", browser=index + 1,
+                            proxy=proxy.label, protocol=protocol, expected_exit_ip=exit_ip)
             worker.start()
 
         self.update_counters()
@@ -977,6 +1069,8 @@ class CheckerWindow(QMainWindow):
         )
 
         self.results.append(record)
+        self.diagnostic("firefox", "navigation_result", session=session,
+                        exit_ip=exit_ip, status=status, proxy=proxy_label)
 
         row = self.table.rowCount()
         self.table.insertRow(row)
@@ -1147,6 +1241,7 @@ class CheckerWindow(QMainWindow):
             worker.stop()
 
         self.log("[STOP] Stop requested.")
+        self.diagnostic("checker", "stop_requested")
 
     def restart(self):
         self.stop()
@@ -1236,6 +1331,8 @@ class CheckerWindow(QMainWindow):
             )
             return
 
+        self.diagnostic("system", "normal_exit", events=self._diag_count)
+        self._diagnostic_dir.cleanup()
         event.accept()
 
 
