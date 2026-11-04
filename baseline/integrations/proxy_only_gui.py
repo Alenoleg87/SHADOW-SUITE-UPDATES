@@ -50,6 +50,7 @@ class ProxyOnlyWindow(QMainWindow):
         self.completed = 0
         self.good = 0
         self.bad = 0
+        self.other = 0
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -111,6 +112,7 @@ class ProxyOnlyWindow(QMainWindow):
         self.completed = 0
         self.good = 0
         self.bad = 0
+        self.other = 0
         self.state.setText(
             "Verification started in CHECKER..."
         )
@@ -127,8 +129,10 @@ class ProxyOnlyWindow(QMainWindow):
 
         if status == "GOOD":
             self.good += 1
-        else:
+        elif status in ("BAD", "AUTH_FAILED"):
             self.bad += 1
+        else:
+            self.other += 1
 
         # Never display proxy username or password.
         label = proxy.label if proxy else "[invalid format]"
@@ -166,6 +170,7 @@ class ProxyOnlyWindow(QMainWindow):
             f"Checked: {self.completed}    "
             f"GOOD: {self.good}    "
             f"BAD: {self.bad}    "
+            f"Other: {self.other}    "
             f"Pending: {max(0, self.total - self.completed)}"
         )
 

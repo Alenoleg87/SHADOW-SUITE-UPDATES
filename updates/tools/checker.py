@@ -6,7 +6,6 @@ Firefox Proxy Diagnostic + Verified Proxy Pool
 
 import sys
 import os
-import queue
 import threading
 import json
 import tempfile
@@ -30,6 +29,7 @@ from playwright.sync_api import sync_playwright
 import openpyxl
 
 from integrations.proxy_runtime import ProxyRuntime
+from integrations.proxy_pool import ProxyPool
 from integrations.proxy_only_gui import ProxyOnlyWindow
 
 
@@ -128,7 +128,7 @@ class RuntimeThread(QThread):
     progress_signal = Signal(int, int)
     log_signal = Signal(str)
 
-    def __init__(self, lines):
+    def __init__(self, lines, proxy_pool):
         super().__init__()
 
         self.lines = lines
@@ -136,6 +136,7 @@ class RuntimeThread(QThread):
             on_result=self.result_signal.emit,
             on_progress=self.progress_signal.emit,
             max_workers=5,
+            proxy_pool=proxy_pool,
         )
 
     def stop(self):
@@ -164,6 +165,8 @@ class FirefoxWorker(QThread):
         proxy,
         protocol,
         expected_ip,
+        lease=None,
+        direct=False,
     ):
         super().__init__()
 
@@ -171,6 +174,8 @@ class FirefoxWorker(QThread):
         self.proxy = proxy
         self.protocol = protocol
         self.expected_ip = expected_ip
+        self.lease = lease
+        self.direct = direct
 
         self.stop_event = threading.Event()
 
@@ -179,9 +184,11 @@ class FirefoxWorker(QThread):
 
     def run(self):
         browser = None
+        import time
+        deadline = time.monotonic() + 90
 
         label = f"Browser #{self.browser_id}"
-        proxy_label = self.proxy.label
+        proxy_label = "DIRECT (normal connection)" if self.direct else self.proxy.label
 
         try:
             with sync_playwright() as playwright:
@@ -191,14 +198,13 @@ class FirefoxWorker(QThread):
                     proxy_label,
                 )
 
-                config = self.proxy.playwright_config(
-                    self.protocol
-                )
+                launch_options = {"headless": False}
+                if not self.direct:
+                    if self.proxy is None or not self.protocol or self.lease is None:
+                        raise RuntimeError("Proxy mode requires a verified lease")
+                    launch_options["proxy"] = self.proxy.playwright_config(self.protocol)
 
-                browser = playwright.firefox.launch(
-                    headless=False,
-                    proxy=config,
-                )
+                browser = playwright.firefox.launch(**launch_options)
 
                 context = browser.new_context(
                     ignore_https_errors=False,
@@ -240,10 +246,10 @@ class FirefoxWorker(QThread):
 
                 self.log_signal.emit(
                     f"[{label}] {status} | "
-                    f"Verified exit IP: {self.expected_ip}"
+                    f"Expected exit IP: {self.expected_ip}"
                 )
 
-                while not self.stop_event.is_set():
+                while not self.stop_event.is_set() and time.monotonic() < deadline:
                     if not browser.is_connected():
                         break
 
@@ -256,8 +262,8 @@ class FirefoxWorker(QThread):
             message = str(exc)
 
             for secret in (
-                self.proxy.username,
-                self.proxy.password,
+                getattr(self.proxy, "username", ""),
+                getattr(self.proxy, "password", ""),
             ):
                 if secret:
                     message = message.replace(
@@ -313,9 +319,10 @@ class CheckerWindow(QMainWindow):
         self.runtime_history = []
         self.runtime_last_progress = (0, 0)
         self.runtime_scan_done = False
+        self.stopping = False
+        self.direct_mode = False
 
-        self.proxy_pool = queue.Queue()
-        self.good_keys = set()
+        self.proxy_pool = ProxyPool()
 
         self.browser_status = []
         self.browser_show_buttons = []
@@ -813,26 +820,36 @@ class CheckerWindow(QMainWindow):
         ):
             return
 
-        lines = self.load_proxies()
-
-        if not lines:
-            QMessageBox.warning(
+        proxy_path_text = self.proxy_path.text().strip()
+        self.direct_mode = not bool(proxy_path_text)
+        if self.direct_mode:
+            answer = QMessageBox.question(
                 self,
-                "Proxy File",
-                "Select a TXT file containing proxies.",
+                "Continue without proxy?",
+                "Are you sure you want to continue without proxy?\n\n"
+                "Firefox will use this computer's normal network connection. "
+                "Your public IP may be visible to the destination website.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
             )
-            return
+            if answer != QMessageBox.StandardButton.Yes:
+                self.log("[DIRECT] Cancelled by user.")
+                return
+            lines = []
+        else:
+            if not Path(proxy_path_text).is_file():
+                QMessageBox.warning(self, "Proxy File", "Selected proxy file does not exist.")
+                return
+            lines = self.load_proxies()
+            if not lines:
+                QMessageBox.warning(self, "Proxy File", "The selected proxy file is empty.")
+                return
 
         self.results = []
         self.table.setRowCount(0)
 
-        self.good_keys.clear()
-
-        while not self.proxy_pool.empty():
-            try:
-                self.proxy_pool.get_nowait()
-            except queue.Empty:
-                break
+        self.proxy_pool.close()
+        self.proxy_pool = ProxyPool()
 
         self.checked_count = 0
         self.good_count = 0
@@ -840,6 +857,8 @@ class CheckerWindow(QMainWindow):
         self.runtime_history = []
         self.runtime_last_progress = (0, len(lines))
         self.runtime_scan_done = False
+        self.stopping = False
+        self._completed_browser_ids = set()
         if self.proxy_monitor is not None:
             self.proxy_monitor.reset(len(lines))
 
@@ -856,7 +875,16 @@ class CheckerWindow(QMainWindow):
                 "No proxy assigned",
             )
 
-        self.runtime_thread = RuntimeThread(lines)
+        if self.direct_mode:
+            self.runtime_scan_done = True
+            self.progress_label.setText("Runtime: SKIPPED (DIRECT)")
+            self.type_label.setText("Protocol: DIRECT")
+            self.log("[DIRECT] User confirmed normal network connection.")
+            self.start_browser_sessions()
+            return
+
+        self.type_label.setText("Protocol: AUTO")
+        self.runtime_thread = RuntimeThread(lines, self.proxy_pool)
 
         self.runtime_thread.result_signal.connect(
             self.runtime_result
@@ -904,35 +932,15 @@ class CheckerWindow(QMainWindow):
         proxy = result.get("proxy")
 
         if status == "GOOD" and proxy:
-            key = (
-                proxy.host,
-                proxy.port,
-                proxy.username,
-                result["protocol"],
+            self.good_count += 1
+            self.start_browser_sessions()
+            self.log(
+                f"[GOOD] {proxy.label} | {result['protocol']} | "
+                f"Exit IP: {result['exit_ip']}"
             )
-
-            if key not in self.good_keys:
-                self.good_keys.add(key)
-
-                self.proxy_pool.put(
-                    (
-                        proxy,
-                        result["protocol"],
-                        result["exit_ip"],
-                    )
-                )
-
-                self.good_count += 1
-
-                self.log(
-                    "[GOOD] "
-                    f"{proxy.label} | "
-                    f"{result['protocol']} | "
-                    f"Exit IP: {result['exit_ip']}"
-                )
-
         else:
-            self.bad_count += 1
+            if status in ("BAD", "AUTH_FAILED"):
+                self.bad_count += 1
 
             label = (
                 proxy.label
@@ -941,7 +949,7 @@ class CheckerWindow(QMainWindow):
             )
 
             self.log(
-                f"[BAD] {label} | "
+                f"[{status}] {label} | "
                 f"{result.get('reason', 'Unknown')}"
             )
 
@@ -973,65 +981,41 @@ class CheckerWindow(QMainWindow):
         )
 
         self.start_browser_sessions()
+        if not self.workers:
+            self.start_btn.setEnabled(True)
 
     def start_browser_sessions(self):
-        count = min(
-            self.threads.value(),
-            self.proxy_pool.qsize(),
-        )
-
-        if count == 0:
-            self.log(
-                "[POOL] No verified proxies available."
-            )
-
-            self.start_btn.setEnabled(True)
+        # One bounded diagnostic session per browser slot per scan.
+        # A slot is not restarted automatically after it finishes.
+        if self.stopping:
             return
-
-        self.workers = []
-
-        for index in range(count):
-            try:
-                proxy, protocol, exit_ip = (
-                    self.proxy_pool.get_nowait()
-                )
-            except queue.Empty:
-                break
-
-            worker = FirefoxWorker(
-                index + 1,
-                proxy,
-                protocol,
-                exit_ip,
-            )
-
-            worker.status_signal.connect(
-                self.update_browser_status
-            )
-
-            worker.result_signal.connect(
-                self.handle_result
-            )
-
-            worker.log_signal.connect(
-                self.log
-            )
-
-            worker.finished.connect(
-                lambda w=worker: self.worker_finished(w)
-            )
-
+        capacity = self.threads.value()
+        used_ids = {w.browser_id for w in self.workers}
+        used_ids.update(getattr(self, "_completed_browser_ids", set()))
+        for browser_id in range(1, capacity + 1):
+            if browser_id in used_ids:
+                continue
+            if self.direct_mode:
+                lease = None
+                worker = FirefoxWorker(browser_id, None, "DIRECT",
+                                       "Not verified", direct=True)
+            else:
+                lease = self.proxy_pool.acquire(f"browser-{browser_id}", timeout=0)
+                if lease is None:
+                    continue
+                worker = FirefoxWorker(browser_id, lease.proxy, lease.protocol,
+                                       lease.exit_ip, lease=lease)
+            worker.status_signal.connect(self.update_browser_status)
+            worker.result_signal.connect(self.handle_result)
+            worker.log_signal.connect(self.log)
+            worker.finished.connect(lambda w=worker: self.worker_finished(w))
             self.workers.append(worker)
-            self.diagnostic("firefox", "session_assigned", browser=index + 1,
-                            proxy=proxy.label, protocol=protocol, expected_exit_ip=exit_ip)
+            used_ids.add(browser_id)
+            self.diagnostic("firefox", "session_assigned", browser=browser_id,
+                            proxy=lease.proxy.label, protocol=lease.protocol,
+                            expected_exit_ip=lease.exit_ip)
             worker.start()
-
         self.update_counters()
-
-        self.log(
-            f"[POOL] Assigned {len(self.workers)} "
-            "verified proxies to Firefox."
-        )
 
     def update_browser_status(
         self,
@@ -1098,7 +1082,8 @@ class CheckerWindow(QMainWindow):
         )
 
         self.pool_label.setText(
-            f"Proxy Pool: {self.proxy_pool.qsize()} READY"
+            ("Proxy Pool: BYPASSED (DIRECT)" if self.direct_mode
+             else f"Proxy Pool: {self.proxy_pool.stats()['available']} READY")
         )
 
         self.refresh_stats()
@@ -1138,16 +1123,17 @@ class CheckerWindow(QMainWindow):
             )
 
     def worker_finished(self, worker):
+        if not hasattr(self, "_completed_browser_ids"):
+            self._completed_browser_ids = set()
+        self._completed_browser_ids.add(worker.browser_id)
+        if worker.lease is not None:
+            self.proxy_pool.release(worker.lease)
         if worker in self.workers:
             self.workers.remove(worker)
 
-        if not self.workers:
+        if not self.workers and self.runtime_scan_done:
             self.start_btn.setEnabled(True)
-
-            self.log(
-                "[CHECKER] Firefox sessions finished."
-            )
-
+            self.log("[CHECKER] Firefox sessions finished.")
         self.update_counters()
 
     def export_to_file(self, data):
@@ -1231,6 +1217,7 @@ class CheckerWindow(QMainWindow):
             return None
 
     def stop(self):
+        self.stopping = True
         if (
             self.runtime_thread
             and self.runtime_thread.isRunning()

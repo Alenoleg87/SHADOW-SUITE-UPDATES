@@ -1,11 +1,23 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "channel": "stable",
   "files": [
     {
+      "path": "integrations/proxy_only_gui.py",
+      "sha256": "b678c36af5f42b3da43013b53ed25c15e2ffe669e359477b086fb6b1679da372"
+    },
+    {
+      "path": "integrations/proxy_pool.py",
+      "sha256": "72d6f4e654f2d139e035edecb665b2ee8d168311cc88ae934295e0d48ca42090"
+    },
+    {
+      "path": "integrations/proxy_runtime.py",
+      "sha256": "ef59f2a4ca9bc3e90ba68c792461c8c90bd783dfc00598495a499d9461fa6582"
+    },
+    {
       "path": "tools/checker.py",
-      "sha256": "6188fff890baeb6b4ec5efb4cda7a4c6749895a5c9a5fb92c641c04aaab98ef2"
+      "sha256": "24d997edadb38923ad9fd0b7a77feb92e0db777d73033e33dc67f999df1faab7"
     }
   ]
 }
