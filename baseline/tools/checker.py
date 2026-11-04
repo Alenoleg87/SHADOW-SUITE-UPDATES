@@ -13,6 +13,9 @@ import shutil
 import traceback
 import platform
 import re
+import ipaddress
+import time
+import uuid
 from pathlib import Path
 from datetime import datetime
 
@@ -34,6 +37,86 @@ from integrations.proxy_only_gui import ProxyOnlyWindow
 
 
 TARGET_URL = "https://www.whatismyip.com/"
+# A secondary, browser-side IP check, never a substitute for proxy verification.
+BROWSER_IP_URL = "https://api64.ipify.org?format=json"
+SESSION_HOLD_SECONDS = 90
+
+
+def browser_observed_exit_ip(context):
+    """Read the public IP through a real Firefox tab in the SAME browser context.
+
+    The APIRequestContext is intentionally NOT used: this check must go via
+    the running browser network route, not an unrelated HTTP client.
+    Failed/blocked lookups return an explicit reason rather than a guessed IP.
+    """
+    probe = context.new_page()
+    try:
+        response = probe.goto(
+            BROWSER_IP_URL,
+            wait_until="domcontentloaded",
+            timeout=12000,
+        )
+        if response is None or not response.ok:
+            return None, "IP endpoint returned no successful response"
+        payload = json.loads(response.body().decode("utf-8"))
+        value = payload.get("ip") if isinstance(payload, dict) else None
+        if not isinstance(value, str):
+            return None, "IP endpoint returned invalid JSON"
+        observed = str(ipaddress.ip_address(value.strip()))
+        return observed, None
+    except Exception as exc:
+        return None, f"Browser IP observation failed: {type(exc).__name__}"
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+
+
+def set_firefox_window_visibility(title_marker, visible):
+    """Windows-only control of OUR tagged Firefox window; never a global Firefox toggle."""
+    if sys.platform != "win32":
+        return False, "Native browser Hide/Show is supported on Windows only"
+    if not title_marker:
+        return False, "Browser window identifier is missing"
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        callback_t = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows.argtypes = (callback_t, wintypes.LPARAM)
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+        user32.ShowWindow.restype = wintypes.BOOL
+
+        matches = []
+
+        @callback_t
+        def window_callback(hwnd, _lparam):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length:
+                title = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, title, length + 1)
+                if title_marker in title.value:
+                    matches.append(hwnd)
+            return True
+
+        if not user32.EnumWindows(window_callback, 0):
+            return False, "Windows could not enumerate browser windows"
+        if not matches:
+            return False, "Tagged browser window not found yet"
+        # SW_SHOW=5; SW_HIDE=0. ShowWindow's return value describes prior state.
+        for hwnd in matches:
+            user32.ShowWindow(hwnd, 5 if visible else 0)
+        return True, f"Updated {len(matches)} tagged browser window(s)"
+    except Exception as exc:
+        return False, f"Window control unavailable: {type(exc).__name__}"
+
 
 
 STYLE = """
@@ -177,6 +260,8 @@ class FirefoxWorker(QThread):
         self.lease = lease
         self.direct = direct
 
+        # Unique marker allows Win32 visibility controls to target THIS session.
+        self.window_title_marker = f"SHADOW-PRO-{os.getpid()}-{browser_id}-{uuid.uuid4().hex[:8]}"
         self.stop_event = threading.Event()
 
     def stop(self):
@@ -184,8 +269,7 @@ class FirefoxWorker(QThread):
 
     def run(self):
         browser = None
-        import time
-        deadline = time.monotonic() + 90
+        deadline = None  # Starts only after navigation and IP observation.
 
         label = f"Browser #{self.browser_id}"
         proxy_label = "DIRECT (normal connection)" if self.direct else self.proxy.label
@@ -231,6 +315,19 @@ class FirefoxWorker(QThread):
                 else:
                     status = f"HTTP {response.status}"
 
+                observed_ip = None
+                ip_reason = "Browser navigation did not succeed"
+                if status == "OPENED" and not self.stop_event.is_set():
+                    observed_ip, ip_reason = browser_observed_exit_ip(context)
+                    # The IP probe opens a second tab temporarily. Re-focus the
+                    # main tab and tag its native title for Hide / Show.
+                    try:
+                        page.bring_to_front()
+                        page.evaluate("marker => { document.title = marker; }",
+                                      self.window_title_marker)
+                    except Exception:
+                        pass
+
                 self.status_signal.emit(
                     self.browser_id,
                     status,
@@ -239,17 +336,29 @@ class FirefoxWorker(QThread):
 
                 self.result_signal.emit(
                     label,
-                    self.expected_ip,
+                    observed_ip or "Not verified",
                     status,
                     proxy_label,
                 )
 
+                ip_comparison = (
+                    "MATCH" if observed_ip == self.expected_ip else "MISMATCH"
+                ) if observed_ip and not self.direct else "NOT COMPARED"
                 self.log_signal.emit(
                     f"[{label}] {status} | "
-                    f"Expected exit IP: {self.expected_ip}"
+                    f"Browser-observed IP: {observed_ip or 'Not verified'} | "
+                    f"Expected IP: {self.expected_ip} | "
+                    f"IP comparison: {ip_comparison}"
+                    + (f" | {ip_reason}" if ip_reason else "")
                 )
 
-                while not self.stop_event.is_set() and time.monotonic() < deadline:
+                # Keep the visible diagnostic window open for the full hold
+                # duration AFTER navigation/measurement, not from launch start.
+                if status == "OPENED":
+                    deadline = time.monotonic() + SESSION_HOLD_SECONDS
+
+                while (deadline is not None and not self.stop_event.is_set()
+                       and time.monotonic() < deadline):
                     if not browser.is_connected():
                         break
 
@@ -279,7 +388,7 @@ class FirefoxWorker(QThread):
 
             self.result_signal.emit(
                 label,
-                self.expected_ip,
+                "Not verified",
                 "ERROR",
                 proxy_label,
             )
@@ -327,6 +436,10 @@ class CheckerWindow(QMainWindow):
         self.browser_status = []
         self.browser_show_buttons = []
         self.last_export_path = None
+        self._export_session_token = None
+        self._export_path = None
+        self._browser_buttons = {}
+        self._browser_hidden = {}
 
         self.loaded_count = 0
         self.checked_count = 0
@@ -452,9 +565,11 @@ class CheckerWindow(QMainWindow):
             row.addWidget(label)
 
             edit = QLineEdit()
-            edit.setPlaceholderText(
-                "Select a local text file..."
-            )
+            if attribute == "source_path":
+                edit.setPlaceholderText("Reference only — not processed in proxy diagnostics")
+                edit.setToolTip("Source File is reserved; the current checker runs network diagnostics only.")
+            else:
+                edit.setPlaceholderText("Select a local text file...")
 
             setattr(self, attribute, edit)
             row.addWidget(edit, 1)
@@ -675,6 +790,8 @@ class CheckerWindow(QMainWindow):
 
         self.browser_status = []
         self.browser_show_buttons = []
+        self._browser_buttons = {}
+        self._browser_hidden = {}
 
         for index in range(count):
             inner = QVBoxLayout()
@@ -703,26 +820,18 @@ class CheckerWindow(QMainWindow):
             hide_btn.setCheckable(True)
             show_btn.setCheckable(True)
 
-            hide_btn.setChecked(True)
+            show_btn.setChecked(True)
 
-            def make_toggle(h_btn, s_btn):
-                h_btn.clicked.connect(
-                    lambda checked: (
-                        s_btn.setChecked(False)
-                        if checked
-                        else h_btn.setChecked(True)
-                    )
-                )
-
-                s_btn.clicked.connect(
-                    lambda checked: (
-                        h_btn.setChecked(False)
-                        if checked
-                        else s_btn.setChecked(True)
-                    )
-                )
-
-            make_toggle(hide_btn, show_btn)
+            # The checked state is changed only if a native window operation
+            # succeeds; no fake visual-only Hide/Show toggle.
+            browser_id = index + 1
+            hide_btn.clicked.connect(
+                lambda _checked=False, bid=browser_id: self.toggle_browser_window(bid, False)
+            )
+            show_btn.clicked.connect(
+                lambda _checked=False, bid=browser_id: self.toggle_browser_window(bid, True)
+            )
+            self._browser_buttons[browser_id] = (hide_btn, show_btn)
 
             toggles.addWidget(hide_btn)
             toggles.addWidget(show_btn)
@@ -748,6 +857,27 @@ class CheckerWindow(QMainWindow):
                 show_btn
             )
 
+    def toggle_browser_window(self, browser_id, visible):
+        worker = next(
+            (item for item in self.workers if item.browser_id == browser_id),
+            None,
+        )
+        ok, reason = (
+            set_firefox_window_visibility(worker.window_title_marker, visible)
+            if worker is not None
+            else (False, "Browser session is not running")
+        )
+        buttons = self._browser_buttons.get(browser_id)
+        if buttons:
+            hide_btn, show_btn = buttons
+            old_hidden = self._browser_hidden.get(browser_id, False)
+            if ok:
+                self._browser_hidden[browser_id] = not visible
+            new_hidden = self._browser_hidden.get(browser_id, old_hidden)
+            hide_btn.setChecked(new_hidden)
+            show_btn.setChecked(not new_hidden)
+        self.log(f"[WINDOW #{browser_id}] {'SHOW' if visible else 'HIDE'}: {reason}")
+
     def browse_source(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -759,7 +889,7 @@ class CheckerWindow(QMainWindow):
         if path:
             self.source_path.setText(path)
             self.log(
-                f"Source selected: {Path(path).name}"
+                f"Source selected for reference only (not processed): {Path(path).name}"
             )
 
     def browse_proxy(self):
@@ -847,6 +977,12 @@ class CheckerWindow(QMainWindow):
 
         self.results = []
         self.table.setRowCount(0)
+        self.last_export_path = None
+        self._export_path = None
+        self._export_session_token = (
+            datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
+        )
+        self.threads.setEnabled(False)
 
         self.proxy_pool.close()
         self.proxy_pool = ProxyPool()
@@ -983,6 +1119,7 @@ class CheckerWindow(QMainWindow):
         self.start_browser_sessions()
         if not self.workers:
             self.start_btn.setEnabled(True)
+            self.threads.setEnabled(True)
 
     def start_browser_sessions(self):
         # One bounded diagnostic session per browser slot per scan.
@@ -1011,9 +1148,14 @@ class CheckerWindow(QMainWindow):
             worker.finished.connect(lambda w=worker: self.worker_finished(w))
             self.workers.append(worker)
             used_ids.add(browser_id)
-            self.diagnostic("firefox", "session_assigned", browser=browser_id,
-                            proxy=lease.proxy.label, protocol=lease.protocol,
-                            expected_exit_ip=lease.exit_ip)
+            if lease is None:
+                self.diagnostic("firefox", "session_assigned", browser=browser_id,
+                                network_mode="DIRECT", proxy="none",
+                                protocol="DIRECT", expected_exit_ip="Not verified")
+            else:
+                self.diagnostic("firefox", "session_assigned", browser=browser_id,
+                                network_mode="VERIFIED_PROXY", proxy=lease.proxy.label,
+                                protocol=lease.protocol, expected_exit_ip=lease.exit_ip)
             worker.start()
         self.update_counters()
 
@@ -1131,8 +1273,14 @@ class CheckerWindow(QMainWindow):
         if worker in self.workers:
             self.workers.remove(worker)
 
+        # After a lease is released, one previously waiting browser slot may
+        # run. Each slot can run at most once per scan; never an endless loop.
+        if not self.stopping:
+            self.start_browser_sessions()
+
         if not self.workers and self.runtime_scan_done:
             self.start_btn.setEnabled(True)
+            self.threads.setEnabled(True)
             self.log("[CHECKER] Firefox sessions finished.")
         self.update_counters()
 
@@ -1165,11 +1313,17 @@ class CheckerWindow(QMainWindow):
                 ".xlsx" if excel else ".txt"
             )
 
-            path = directory / (
-                f"Results_"
-                f"{datetime.now():%Y%m%d_%H%M%S}"
-                f"{extension}"
-            )
+            # One stable file per run, not one colliding name per result/second.
+            if self._export_path is None or self._export_path.suffix != extension:
+                if not self._export_session_token:
+                    self._export_session_token = (
+                        datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                        + "_" + uuid.uuid4().hex[:8]
+                    )
+                self._export_path = directory / (
+                    f"Results_{self._export_session_token}{extension}"
+                )
+            path = self._export_path
 
             headers = [
                 "Session",
@@ -1178,36 +1332,30 @@ class CheckerWindow(QMainWindow):
                 "Proxy",
             ]
 
-            if excel:
-                workbook = openpyxl.Workbook()
-                sheet = workbook.active
-                sheet.title = "Results"
-                sheet.append(headers)
-
-                for row in data:
-                    sheet.append(row)
-
-                workbook.save(path)
-
-            else:
-                with open(
-                    path,
-                    "w",
-                    encoding="utf-8",
-                ) as file:
-                    file.write(
-                        "\t".join(headers) + "\n"
-                    )
-
+            # Write to a neighbor file before atomic replacement so an
+            # interrupted export never leaves a truncated published result.
+            file_handle, temporary_name = tempfile.mkstemp(
+                dir=directory, prefix=".shadow_results_", suffix=extension,
+            )
+            os.close(file_handle)
+            temporary = Path(temporary_name)
+            try:
+                if excel:
+                    workbook = openpyxl.Workbook()
+                    sheet = workbook.active
+                    sheet.title = "Results"
+                    sheet.append(headers)
                     for row in data:
-                        file.write(
-                            "\t".join(
-                                str(value)
-                                for value in row
-                            )
-                            + "\n"
-                        )
-
+                        sheet.append(row)
+                    workbook.save(temporary)
+                else:
+                    with temporary.open("w", encoding="utf-8", newline="") as file:
+                        file.write("\t".join(headers) + "\n")
+                        for row in data:
+                            file.write("\t".join(str(value) for value in row) + "\n")
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
             return path
 
         except Exception as exc:
