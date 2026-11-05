@@ -1,0 +1,48 @@
+{
+  "app": "SHADOW-SUITE-PRO",
+  "version": "2.2.6",
+  "channel": "stable",
+  "release_dir": "updates/releases/v2.2.6",
+  "files": [
+    {
+      "path": "integrations/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "integrations/proxy_only_gui.py",
+      "sha256": "b678c36af5f42b3da43013b53ed25c15e2ffe669e359477b086fb6b1679da372"
+    },
+    {
+      "path": "integrations/proxy_pool.py",
+      "sha256": "72d6f4e654f2d139e035edecb665b2ee8d168311cc88ae934295e0d48ca42090"
+    },
+    {
+      "path": "integrations/proxy_runtime.py",
+      "sha256": "ef59f2a4ca9bc3e90ba68c792461c8c90bd783dfc00598495a499d9461fa6582"
+    },
+    {
+      "path": "root/module_loader.py",
+      "sha256": "619e2860fdd0266b99fa1b5516aea6b94a7871e94051d613b7c3a7ffbe95b98c"
+    },
+    {
+      "path": "root/setup_manager.py",
+      "sha256": "ab44e3a8debde55db3376b9b740e06bb4e76dfc6a8b98d3b9e93509c8501aac1"
+    },
+    {
+      "path": "tools/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tools/adder.py",
+      "sha256": "804f15a2f1a4f44ac59ab6ac611ad58d68ac95cf09a2085c93ec529dcf3eb1c3"
+    },
+    {
+      "path": "tools/changer.py",
+      "sha256": "1c73ce0b69a1573c2c9f9ebfdf61a3ffc5319485759b85ea776997fbf727b0ae"
+    },
+    {
+      "path": "tools/checker.py",
+      "sha256": "2550a858c37446b4a5f0d89fd384ecb53cbb69c8c78d47f538316307d89b6168"
+    }
+  ]
+}

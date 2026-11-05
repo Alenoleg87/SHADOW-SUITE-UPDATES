@@ -22,7 +22,7 @@ from datetime import datetime
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame,
-    QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QFileDialog, QLineEdit, QSpinBox, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QPlainTextEdit, QMessageBox, QInputDialog,
@@ -120,88 +120,132 @@ def set_firefox_window_visibility(title_marker, visible):
 
 
 STYLE = """
-QMainWindow,QWidget {
-    background:#FAF9F7;
-    color:#252B32;
-    font:12px 'Segoe UI';
+/* SHADOW CHECKER PRO — compact Publisher-inspired grey/blue/green theme */
+QMainWindow, QWidget {
+    background: #30363B;
+    color: #EDF2F3;
+    font: 10px 'Segoe UI';
 }
 QFrame#panel {
-    background:#FFFFFF;
-    border:1px solid #DDDDE0;
-    border-radius:11px;
+    background: #3B4349;
+    border: 1px solid #5B6870;
+    border-radius: 7px;
 }
-QLabel {background:transparent;}
+QLabel { background: transparent; }
 QLabel#section {
-    font-weight:750;
-    font-size:13px;
+    color: #DCEAF0;
+    font-weight: 700;
+    font-size: 11px;
 }
 QPushButton {
-    background:#FFFEFC;
-    border:1px solid #E4D9D0;
-    border-radius:8px;
-    padding:7px 12px;
-    color:#333942;
+    background: #535F66;
+    color: #F2F5F6;
+    border: 1px solid #75838B;
+    border-radius: 5px;
+    padding: 3px 7px;
+    min-height: 18px;
 }
 QPushButton:hover {
-    border-color:#FF8C47;
-    background:#FFF3EA;
+    background: #657680;
+    border-color: #8CC7E8;
 }
+QPushButton:pressed { background: #46535A; }
+QPushButton:disabled {
+    background: #434B51;
+    color: #9FAAB0;
+    border-color: #59636A;
+}
+/* Keep existing object names and signals; only their visual palette changes. */
 QPushButton#orange {
-    background:#FF831F;
-    color:white;
-    border:1px solid #FF831F;
-    font-weight:800;
-    font-size:14px;
+    background: #A6D09E;
+    color: #233026;
+    border: 1px solid #A6D09E;
+    font-weight: 750;
+    font-size: 11px;
 }
+QPushButton#orange:hover { background: #B7DFB0; }
 QPushButton#stop {
-    color:#B42318;
-    background:#FFF0EF;
-    border:1px solid #EFA8A4;
-    font-weight:700;
+    background: #57474A;
+    color: #FFD4D0;
+    border: 1px solid #997175;
+    font-weight: 650;
 }
+QPushButton#stop:hover { background: #684F52; }
 QPushButton#show {
-    color:#333942;
-    background:#FFFEFC;
-    border:1px solid #E4D9D0;
-    font-weight:650;
+    background: #4B5860;
+    color: #E7EFF2;
+    border: 1px solid #72818B;
 }
 QPushButton#show:checked {
-    color:#187D42;
-    background:#EBF8EF;
-    border:1px solid #8FCFA5;
-    font-weight:700;
+    background: #315845;
+    color: #C7F0D1;
+    border: 1px solid #74B98C;
+    font-weight: 650;
 }
 QPushButton#tofile {
-    color:#187D42;
-    background:#EAF8EE;
-    border:1px solid #8FCFA5;
-    font-weight:700;
+    background: #365C49;
+    color: #D4F1DB;
+    border: 1px solid #77B58C;
+    font-weight: 650;
 }
 QPushButton#explore {
-    color:#896000;
-    background:#FFF8DE;
-    border:1px solid #EAD18A;
-    font-weight:700;
+    background: #34586B;
+    color: #D6F0FC;
+    border: 1px solid #77B6D5;
+    font-weight: 650;
 }
-QLineEdit,QComboBox,QSpinBox {
-    background:#FFFFFF;
-    border:1px solid #DED9D4;
-    border-radius:7px;
-    padding:7px;
-    color:#30343A;
+QLineEdit, QComboBox, QSpinBox {
+    background: #293137;
+    color: #F0F3F4;
+    border: 1px solid #75828A;
+    border-radius: 5px;
+    padding: 3px 6px;
+    min-height: 18px;
+    selection-background-color: #487F9D;
 }
-QTableWidget,QPlainTextEdit {
-    background:#FFFEFD;
-    border:1px solid #E7DFD9;
-    border-radius:7px;
-    gridline-color:#EEEAE6;
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
+    border-color: #8CC7E8;
 }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled {
+    background: #414A50;
+    color: #AAB4B9;
+}
+QComboBox QAbstractItemView {
+    background: #303A40;
+    color: #EFF3F4;
+    selection-background-color: #426D84;
+}
+QTableWidget, QPlainTextEdit {
+    background: #2C353B;
+    color: #EDF2F3;
+    border: 1px solid #64737B;
+    border-radius: 5px;
+    gridline-color: #45525A;
+    selection-background-color: #3E718D;
+    selection-color: #FFFFFF;
+}
+QTableWidget { alternate-background-color: #344047; }
 QHeaderView::section {
-    background:#F8F5F2;
-    border:0;
-    border-bottom:1px solid #E7DFD9;
-    padding:7px;
-    font-weight:650;
+    background: #46535B;
+    color: #E7F0F3;
+    border: none;
+    border-bottom: 1px solid #71818A;
+    padding: 4px;
+    font-weight: 650;
+}
+QTableCornerButton::section { background: #46535B; }
+QScrollBar:vertical, QScrollBar:horizontal { background: #303A40; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background: #657780;
+    border-radius: 4px;
+    min-height: 15px;
+    min-width: 15px;
+}
+QToolTip {
+    background: #263137;
+    color: #F1F5F6;
+    border: 1px solid #8CC7E8;
+    padding: 3px;
 }
 """
 
@@ -416,8 +460,8 @@ class CheckerWindow(QMainWindow):
             "SHADOW CHECKER PRO — Firefox Proxy Pool"
         )
 
-        self.resize(1080, 720)
-        self.setMinimumSize(940, 650)
+        self.resize(920, 610)
+        self.setMinimumSize(820, 550)
         self.setStyleSheet(STYLE)
 
         self.proxies = []
@@ -527,10 +571,11 @@ class CheckerWindow(QMainWindow):
         self.setCentralWidget(root)
 
         v = QVBoxLayout(root)
-        v.setContentsMargins(13, 12, 13, 12)
-        v.setSpacing(8)
+        v.setContentsMargins(9, 8, 9, 8)
+        v.setSpacing(5)
 
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(5)
 
         for name, function in [
             ("■  Stop", self.stop),
@@ -540,7 +585,7 @@ class CheckerWindow(QMainWindow):
             ("▤  Diagnostic Logs", self.show_diagnostics),
         ]:
             button = QPushButton(name)
-            button.setMinimumWidth(125)
+            button.setMinimumWidth(105)
 
             if name.startswith("■"):
                 button.setObjectName("stop")
@@ -559,9 +604,10 @@ class CheckerWindow(QMainWindow):
             ("▤   Proxy File", "proxy_path", self.browse_proxy),
         ]:
             row = QHBoxLayout()
+            row.setSpacing(5)
 
             label = QLabel(title)
-            label.setFixedWidth(150)
+            label.setFixedWidth(112)
             row.addWidget(label)
 
             edit = QLineEdit()
@@ -576,12 +622,14 @@ class CheckerWindow(QMainWindow):
 
             button = QPushButton("▱  Explore")
             button.setObjectName("explore")
+            button.setFixedWidth(84)
             button.clicked.connect(function)
             row.addWidget(button)
 
             v.addLayout(row)
 
         settings = QHBoxLayout()
+        settings.setSpacing(6)
 
         settings.addWidget(
             QLabel("Proxy Protocol")
@@ -593,7 +641,7 @@ class CheckerWindow(QMainWindow):
         ])
 
         settings.addWidget(self.proxy_type)
-        settings.addSpacing(16)
+        settings.addSpacing(8)
 
         settings.addWidget(QLabel("Threads"))
 
@@ -606,7 +654,7 @@ class CheckerWindow(QMainWindow):
         )
 
         settings.addWidget(self.threads)
-        settings.addSpacing(16)
+        settings.addSpacing(8)
 
         settings.addWidget(QLabel("Export Mode"))
 
@@ -621,13 +669,14 @@ class CheckerWindow(QMainWindow):
 
         self.start_btn = QPushButton("▶  START")
         self.start_btn.setObjectName("orange")
-        self.start_btn.setMinimumWidth(160)
+        self.start_btn.setMinimumWidth(112)
         self.start_btn.clicked.connect(self.start)
 
         settings.addWidget(self.start_btn)
         v.addLayout(settings)
 
         counter = QHBoxLayout()
+        counter.setSpacing(5)
 
         self.loaded_label = QLabel("Loaded: 0")
         self.working_label = QLabel("Valid: 0")
@@ -647,6 +696,7 @@ class CheckerWindow(QMainWindow):
         v.addWidget(self.panel(counter))
 
         pool_row = QHBoxLayout()
+        pool_row.setSpacing(5)
 
         self.pool_label = QLabel(
             "Proxy Pool: 0 READY"
@@ -663,7 +713,7 @@ class CheckerWindow(QMainWindow):
         v.addWidget(self.panel(pool_row))
 
         browser_box = QVBoxLayout()
-        browser_box.setContentsMargins(9, 8, 9, 8)
+        browser_box.setContentsMargins(7, 6, 7, 6)
         browser_box.setSpacing(5)
 
         browser_box.addWidget(
@@ -673,13 +723,16 @@ class CheckerWindow(QMainWindow):
             )
         )
 
-        self.browser_row = QHBoxLayout()
+        self.browser_row = QGridLayout()
+        self.browser_row.setHorizontalSpacing(5)
+        self.browser_row.setVerticalSpacing(5)
         browser_box.addLayout(self.browser_row)
 
         v.addWidget(self.panel(browser_box))
         self.browser_cards(self.threads.value())
 
         stats_row = QHBoxLayout()
+        stats_row.setSpacing(6)
         self.stats = {}
 
         for key in [
@@ -693,13 +746,14 @@ class CheckerWindow(QMainWindow):
         v.addWidget(self.panel(stats_row))
 
         panes = QHBoxLayout()
+        panes.setSpacing(6)
 
         for title, is_results in [
             ("▤   Results", True),
             ("▤   Logs", False),
         ]:
             column = QVBoxLayout()
-            column.setContentsMargins(8, 7, 8, 8)
+            column.setContentsMargins(7, 6, 7, 6)
 
             header = QHBoxLayout()
             header.addWidget(
@@ -710,10 +764,8 @@ class CheckerWindow(QMainWindow):
             )
             header.addStretch()
 
-            if not is_results:
-                diag_button = QPushButton("▤ Diagnostic Logs")
-                diag_button.clicked.connect(self.show_diagnostics)
-                header.addWidget(diag_button)
+            # Diagnostic Logs is already available in the top toolbar.
+            # Avoid a duplicate button above the Logs pane.
             clear = QPushButton("♧  Clear")
             header.addWidget(clear)
             column.addLayout(header)
@@ -733,7 +785,7 @@ class CheckerWindow(QMainWindow):
                 )
 
                 self.table.verticalHeader().setDefaultSectionSize(
-                    25
+                    22
                 )
 
                 self.table.horizontalHeader().setSectionResizeMode(
@@ -743,6 +795,7 @@ class CheckerWindow(QMainWindow):
                 self.table.setEditTriggers(
                     QTableWidget.EditTrigger.NoEditTriggers
                 )
+                self.table.setAlternatingRowColors(True)
 
                 column.addWidget(self.table)
 
@@ -795,8 +848,8 @@ class CheckerWindow(QMainWindow):
 
         for index in range(count):
             inner = QVBoxLayout()
-            inner.setContentsMargins(8, 8, 8, 8)
-            inner.setSpacing(5)
+            inner.setContentsMargins(6, 5, 6, 5)
+            inner.setSpacing(3)
 
             inner.addWidget(
                 QLabel(
@@ -806,6 +859,7 @@ class CheckerWindow(QMainWindow):
             )
 
             toggles = QHBoxLayout()
+            toggles.setSpacing(4)
 
             status = QLabel(
                 "Status: WAITING"
@@ -841,13 +895,16 @@ class CheckerWindow(QMainWindow):
                 "⌖  Proxy: Waiting"
             )
 
+            location.setWordWrap(True)
+            status.setWordWrap(True)
             inner.addWidget(location)
             inner.addWidget(status)
 
             card = self.panel(inner)
-            card.setMinimumWidth(180)
+            card.setMinimumWidth(132)
+            card.setMaximumWidth(260)
 
-            self.browser_row.addWidget(card, 1)
+            self.browser_row.addWidget(card, index // 5, index % 5)
 
             self.browser_status.append(
                 (location, status)

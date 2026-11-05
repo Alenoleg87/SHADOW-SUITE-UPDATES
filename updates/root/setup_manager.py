@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 import urllib.request
 
@@ -134,7 +135,7 @@ def get_firefox_path():
         return Path(playwright.firefox.executable_path)
 
 
-def test_firefox():
+def test_firefox(timeout_ms=45000):
     """
     Actually launch Firefox and open a local blank page.
     """
@@ -144,12 +145,12 @@ def test_firefox():
     with sync_playwright() as playwright:
         browser = playwright.firefox.launch(
             headless=True,
-            timeout=20000,
+            timeout=timeout_ms,
         )
 
         try:
             page = browser.new_page()
-            page.goto("about:blank", timeout=10000)
+            page.goto("about:blank", timeout=15000)
 
             if page.url != "about:blank":
                 raise RuntimeError(
@@ -157,6 +158,39 @@ def test_firefox():
                 )
         finally:
             browser.close()
+
+
+def verify_firefox_with_retry():
+    """Verify Playwright Firefox with one automatic retry for startup timeouts.
+
+    Slow Windows/RDP sessions can launch the Firefox process but not finish
+    the Playwright handshake within the old 20-second timeout. A timeout is
+    not evidence that Microsoft VC++ libraries are missing.
+    """
+    launch_timeouts_ms = (45000, 60000)
+    for attempt, timeout_ms in enumerate(launch_timeouts_ms, start=1):
+        logger.info(
+            "Firefox smoke test attempt %s/%s; launch timeout=%sms",
+            attempt, len(launch_timeouts_ms), timeout_ms,
+        )
+        try:
+            test_firefox(timeout_ms=timeout_ms)
+            return
+        except Exception as exc:
+            message = str(exc).lower()
+            timed_out = (
+                "timeout" in type(exc).__name__.lower()
+                or "timeout" in message
+                or "timed out" in message
+            )
+            if not timed_out or attempt == len(launch_timeouts_ms):
+                raise
+            logger.warning(
+                "Firefox startup timed out on attempt %s; "
+                "retrying automatically in 2 seconds. Error: %s",
+                attempt, exc,
+            )
+            time.sleep(2)
 
 
 def missing_dlls_from_error(error_text):
@@ -619,7 +653,7 @@ class SetupWorker(QThread):
             )
 
             try:
-                test_firefox()
+                verify_firefox_with_retry()
 
             except Exception as exc:
                 error_text = str(exc)
@@ -676,16 +710,25 @@ class SetupWorker(QThread):
 
                     # Verify once after repair.
                     # Do not repeatedly install dependencies.
-                    test_firefox()
+                    verify_firefox_with_retry()
 
                 else:
-                    self.fail(
-                        "Firefox failed to launch. "
-                        "The cause is not a recognized "
-                        "Microsoft VC++ dependency. "
-                        "See logs/setup.log.",
-                        False,
-                    )
+                    if "timeout" in error_text.lower():
+                        self.fail(
+                            "Firefox startup timed out after automatic "
+                            "retries. This does not indicate missing "
+                            "Microsoft VC++ libraries. "
+                            "See logs/setup.log.",
+                            False,
+                        )
+                    else:
+                        self.fail(
+                            "Firefox failed to launch. "
+                            "The cause is not a recognized "
+                            "Microsoft VC++ dependency. "
+                            "See logs/setup.log.",
+                            False,
+                        )
                     return
 
             self.report(
