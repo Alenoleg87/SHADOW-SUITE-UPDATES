@@ -36,7 +36,7 @@ from integrations.proxy_pool import ProxyPool
 from integrations.proxy_only_gui import ProxyOnlyWindow
 
 
-TARGET_URL = "https://www.whatismyip.com/"
+TARGET_URL = "https://mail.google.com/"
 # A secondary, browser-side IP check, never a substitute for proxy verification.
 BROWSER_IP_URL = "https://api64.ipify.org?format=json"
 SESSION_HOLD_SECONDS = 90
@@ -312,139 +312,80 @@ class FirefoxWorker(QThread):
         self.stop_event.set()
 
     def run(self):
+        """Navigate visibly, report connection status, and hold for 90 seconds.
+
+        Does not enter identifiers/passwords or attempt Google authentication.
+        """
         browser = None
-        deadline = None  # Starts only after navigation and IP observation.
-
         label = f"Browser #{self.browser_id}"
-        proxy_label = "DIRECT (normal connection)" if self.direct else self.proxy.label
-
+        proxy_label = "DIRECT" if self.direct else self.proxy.label
         try:
             with sync_playwright() as playwright:
-                self.status_signal.emit(
-                    self.browser_id,
-                    "CONNECTING",
-                    proxy_label,
-                )
-
-                launch_options = {"headless": False}
+                self.status_signal.emit(self.browser_id, "CONNECTING", proxy_label)
+                options = {"headless": False}
                 if not self.direct:
                     if self.proxy is None or not self.protocol or self.lease is None:
-                        raise RuntimeError("Proxy mode requires a verified lease")
-                    launch_options["proxy"] = self.proxy.playwright_config(self.protocol)
+                        raise RuntimeError("Proxy requires verified lease")
+                    options["proxy"] = self.proxy.playwright_config(self.protocol)
 
-                browser = playwright.firefox.launch(**launch_options)
-
-                context = browser.new_context(
-                    ignore_https_errors=False,
-                )
-
+                browser = playwright.firefox.launch(**options)
+                context = browser.new_context(ignore_https_errors=False)
                 page = context.new_page()
+                try:
+                    page.goto("about:blank", timeout=5000)
+                except Exception:
+                    pass
+                try:
+                    page.evaluate("marker => {document.title = marker}", self.window_title_marker)
+                except Exception:
+                    pass
 
-                self.status_signal.emit(
-                    self.browser_id,
-                    "OPENING WEBSITE",
-                    proxy_label,
-                )
-
-                response = page.goto(
-                    TARGET_URL,
-                    wait_until="domcontentloaded",
-                    timeout=20000,
-                )
-
-                if response is None:
-                    status = "NO RESPONSE"
-                elif response.ok:
-                    status = "OPENED"
-                else:
-                    status = f"HTTP {response.status}"
-
-                observed_ip = None
-                ip_reason = "Browser navigation did not succeed"
-                if status == "OPENED" and not self.stop_event.is_set():
-                    observed_ip, ip_reason = browser_observed_exit_ip(context)
-                    # The IP probe opens a second tab temporarily. Re-focus the
-                    # main tab and tag its native title for Hide / Show.
-                    try:
-                        page.bring_to_front()
-                        page.evaluate("marker => { document.title = marker; }",
-                                      self.window_title_marker)
-                    except Exception:
-                        pass
-
-                self.status_signal.emit(
-                    self.browser_id,
-                    status,
-                    proxy_label,
-                )
-
-                self.result_signal.emit(
-                    label,
-                    observed_ip or "Not verified",
-                    status,
-                    proxy_label,
-                )
-
-                ip_comparison = (
-                    "MATCH" if observed_ip == self.expected_ip else "MISMATCH"
-                ) if observed_ip and not self.direct else "NOT COMPARED"
-                self.log_signal.emit(
-                    f"[{label}] {status} | "
-                    f"Browser-observed IP: {observed_ip or 'Not verified'} | "
-                    f"Expected IP: {self.expected_ip} | "
-                    f"IP comparison: {ip_comparison}"
-                    + (f" | {ip_reason}" if ip_reason else "")
-                )
-
-                # Keep the visible diagnostic window open for the full hold
-                # duration AFTER navigation/measurement, not from launch start.
-                if status == "OPENED":
-                    deadline = time.monotonic() + SESSION_HOLD_SECONDS
-
-                while (deadline is not None and not self.stop_event.is_set()
-                       and time.monotonic() < deadline):
-                    if not browser.is_connected():
-                        break
-
-                    if page.is_closed():
-                        break
-
-                    self.msleep(350)
-
-        except Exception as exc:
-            message = str(exc)
-
-            for secret in (
-                getattr(self.proxy, "username", ""),
-                getattr(self.proxy, "password", ""),
-            ):
-                if secret:
-                    message = message.replace(
-                        secret,
-                        "***",
+                # Start hold time at the beginning of navigation, and keep the
+                # window alive after navigation errors too.
+                self.status_signal.emit(self.browser_id, "OPENING GMAIL", proxy_label)
+                status = "NOT_OPENED"
+                reason = ""
+                try:
+                    response = page.goto(
+                        TARGET_URL,
+                        wait_until="domcontentloaded",
+                        timeout=20000,
                     )
+                    if response is None:
+                        status = "NO_RESPONSE"
+                    elif response.ok:
+                        status = "OPENED"
+                    else:
+                        status = f"HTTP_{response.status}"
+                except Exception as exc:
+                    status = "NAVIGATION_ERROR"
+                    reason = type(exc).__name__
 
-            self.status_signal.emit(
-                self.browser_id,
-                "ERROR",
-                proxy_label,
-            )
+                # Marker tagging supports Hide/Show on Windows.
+                try:
+                    page.evaluate("marker => {document.title = marker}", self.window_title_marker)
+                except Exception:
+                    pass
+                self.status_signal.emit(self.browser_id, status, proxy_label)
+                self.result_signal.emit(label, "Gmail", status, reason or "Navigation finished")
+                self.log_signal.emit(f"[{label}] Gmail: {status} | {reason or 'No exception'}")
+                deadline = time.monotonic() + SESSION_HOLD_SECONDS
 
-            self.result_signal.emit(
-                label,
-                "Not verified",
-                "ERROR",
-                proxy_label,
-            )
-
-            self.log_signal.emit(
-                f"[{label}] "
-                f"{type(exc).__name__}: "
-                f"{message[:160]}"
-            )
-
+                while not self.stop_event.is_set() and time.monotonic() < deadline:
+                    if not browser.is_connected() or page.is_closed():
+                        break
+                    self.msleep(250)
+        except Exception as exc:
+            safe = str(exc)
+            if self.proxy is not None:
+                for secret in (self.proxy.username, self.proxy.password):
+                    if secret:
+                        safe = safe.replace(secret, "***")
+            self.status_signal.emit(self.browser_id, "ERROR", proxy_label)
+            self.result_signal.emit(label, "Gmail", "ERROR", type(exc).__name__)
+            self.log_signal.emit(f"[{label}] {type(exc).__name__}: {safe[:160]}")
         finally:
-            if browser:
+            if browser is not None:
                 try:
                     browser.close()
                 except Exception:
@@ -499,7 +440,7 @@ class CheckerWindow(QMainWindow):
         self.build_ui()
         self.diagnostic("system", "startup", python=sys.version.split()[0],
                         os=platform.platform(), target=TARGET_URL)
-        self.log("Proxy Runtime ready.")
+        self.log("Proxy Runtime ready. Gmail navigation only; no account login.")
 
     def panel(self, layout=None):
         panel = QFrame(objectName="panel")
@@ -612,8 +553,8 @@ class CheckerWindow(QMainWindow):
 
             edit = QLineEdit()
             if attribute == "source_path":
-                edit.setPlaceholderText("Reference only — not processed in proxy diagnostics")
-                edit.setToolTip("Source File is reserved; the current checker runs network diagnostics only.")
+                edit.setPlaceholderText("Reference only — no account login is performed")
+                edit.setToolTip("Source File is reserved for a separate authorized integration; no account login is performed.")
             else:
                 edit.setPlaceholderText("Select a local text file...")
 
@@ -775,9 +716,9 @@ class CheckerWindow(QMainWindow):
 
                 self.table.setHorizontalHeaderLabels([
                     "Session",
-                    "Exit IP",
+                    "Website",
                     "Status",
-                    "Proxy",
+                    "Details",
                 ])
 
                 self.table.verticalHeader().setVisible(
@@ -1240,20 +1181,20 @@ class CheckerWindow(QMainWindow):
     def handle_result(
         self,
         session,
-        exit_ip,
+        website,
         status,
-        proxy_label,
+        detail,
     ):
         record = (
             session,
-            exit_ip,
+            website,
             status,
-            proxy_label,
+            detail,
         )
 
         self.results.append(record)
         self.diagnostic("firefox", "navigation_result", session=session,
-                        exit_ip=exit_ip, status=status, proxy=proxy_label)
+                        website=website, status=status, detail=detail)
 
         row = self.table.rowCount()
         self.table.insertRow(row)
@@ -1302,7 +1243,7 @@ class CheckerWindow(QMainWindow):
         )
 
         errors = sum(
-            row[2] == "ERROR"
+            row[2] in ("ERROR", "NAVIGATION_ERROR")
             for row in self.results
         )
 
@@ -1384,9 +1325,9 @@ class CheckerWindow(QMainWindow):
 
             headers = [
                 "Session",
-                "Exit IP",
+                "Website",
                 "Status",
-                "Proxy",
+                "Details",
             ]
 
             # Write to a neighbor file before atomic replacement so an
