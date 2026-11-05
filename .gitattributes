@@ -1,0 +1,3 @@
+# Preserve exact Python module bytes in the Git repository.
+# Publisher SHA-256 must match downloaded GitHub Raw SHA-256.
+*.py -text
