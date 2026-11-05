@@ -1,8 +1,8 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.6",
+  "version": "2.2.7",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.6",
+  "release_dir": "updates/releases/v2.2.7",
   "files": [
     {
       "path": "integrations/__init__.py",
