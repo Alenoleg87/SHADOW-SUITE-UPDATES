@@ -1,8 +1,8 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.9",
+  "version": "2.2.10",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.9",
+  "release_dir": "updates/releases/v2.2.10",
   "files": [
     {
       "path": "integrations/__init__.py",
@@ -19,10 +19,6 @@
     {
       "path": "integrations/proxy_runtime.py",
       "sha256": "ef59f2a4ca9bc3e90ba68c792461c8c90bd783dfc00598495a499d9461fa6582"
-    },
-    {
-      "path": "integrations/system_diagnostic.py",
-      "sha256": "7d66e82850691af6311938a9794dba010c3d1d245518f3af70b2aff7d972b3cd"
     },
     {
       "path": "root/module_loader.py",
