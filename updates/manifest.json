@@ -1,12 +1,16 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.12",
+  "version": "2.2.13",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.12",
+  "release_dir": "updates/releases/v2.2.13",
   "files": [
     {
       "path": "integrations/__init__.py",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "integrations/browser_identity.py",
+      "sha256": "c0cb086d77b1fa7d7aad7eee4005efc0c43b009d1954161d116ced1a8cdbcca6"
     },
     {
       "path": "integrations/proxy_only_gui.py",
@@ -50,7 +54,7 @@
     },
     {
       "path": "tools/checker.py",
-      "sha256": "4f02489a429a135a11b476acfac8df013dea8e35747df973ee58434cf8882de1"
+      "sha256": "6fe057766d552fcaf212f7ca368d02e428a6450289471f8ba2f1490978dfa6da"
     },
     {
       "path": "tools/test_update.py",

