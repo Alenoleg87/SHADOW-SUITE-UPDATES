@@ -1,8 +1,8 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.11",
+  "version": "2.2.12",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.11",
+  "release_dir": "updates/releases/v2.2.12",
   "files": [
     {
       "path": "integrations/__init__.py",
@@ -23,6 +23,10 @@
     {
       "path": "integrations/system_diagnostic.py",
       "sha256": "7d66e82850691af6311938a9794dba010c3d1d245518f3af70b2aff7d972b3cd"
+    },
+    {
+      "path": "integrations/worker_liveviewer.py",
+      "sha256": "4db90eaefb8845497f438fa4812484874f30ea09dfc9faf6ecb4672d34cd37a6"
     },
     {
       "path": "root/module_loader.py",
@@ -46,7 +50,7 @@
     },
     {
       "path": "tools/checker.py",
-      "sha256": "65a0b19074a49c920524af8be37931e72d2cc23dd174328e50f5e4eb39167f08"
+      "sha256": "4f02489a429a135a11b476acfac8df013dea8e35747df973ee58434cf8882de1"
     },
     {
       "path": "tools/test_update.py",
