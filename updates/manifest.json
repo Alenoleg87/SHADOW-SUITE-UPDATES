@@ -1,8 +1,8 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.14",
+  "version": "2.2.15",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.14",
+  "release_dir": "updates/releases/v2.2.15",
   "files": [
     {
       "path": "integrations/__init__.py",
@@ -27,6 +27,30 @@
     {
       "path": "integrations/system_diagnostic.py",
       "sha256": "7d66e82850691af6311938a9794dba010c3d1d245518f3af70b2aff7d972b3cd"
+    },
+    {
+      "path": "integrations/uae.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "integrations/uca.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "integrations/uit.py",
+      "sha256": "2383aa3439c5d185fb6446e30c54ad95cca6b423cf115129bf8e8d38e9567241"
+    },
+    {
+      "path": "integrations/umi.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "integrations/ump.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "integrations/usmba.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
       "path": "integrations/worker_liveviewer.py",
@@ -55,6 +79,10 @@
     {
       "path": "tools/checker.py",
       "sha256": "2fb6145077c31980dc386e1ff5d294f01d3bea56ed616bcd5a1518542d482e74"
+    },
+    {
+      "path": "tools/edu_checker.py",
+      "sha256": "6d0fdc31afcb6f91d9478da5013076bf81e4f24ad9386e524f0a20799e3ae2e4"
     },
     {
       "path": "tools/test_update.py",
