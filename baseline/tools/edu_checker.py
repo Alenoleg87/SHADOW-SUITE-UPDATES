@@ -16,6 +16,7 @@ import re
 import ipaddress
 import time
 import uuid
+import inspect
 from pathlib import Path
 from datetime import datetime
 import random
@@ -236,7 +237,11 @@ class UniversityWorker(QThread):
         except queue.Empty:
             return
 
-        cne, cni, dob = combo
+        cne = str(combo[0]).strip() if len(combo) > 0 and combo[0] else ""
+        cni = str(combo[1]).strip() if len(combo) > 1 and combo[1] else ""
+        dob = str(combo[2]).strip() if len(combo) > 2 and combo[2] else ""
+        bac = str(combo[3]).strip() if len(combo) > 3 and combo[3] else ""
+
         masked_cne = cne[:3] + "***" if len(cne) > 3 else "***"
         self.status_signal.emit(self.browser_id, f"CHECKING {masked_cne}", proxy_label)
         mode_str = "VISIBLE (SHOW)" if not self.headless else "BACKGROUND (HIDE)"
@@ -272,7 +277,14 @@ class UniversityWorker(QThread):
                 EngineClass = ENGINES.get(self.selected_engine)
                 if EngineClass:
                     engine = EngineClass()
-                    res = engine.run_workflow(page, cne, cni, dob)
+                    
+                    try:
+                        res = engine.run_workflow(page, cne, cni, dob)
+                    except TypeError:
+                        try:
+                            res = engine.run_workflow(page, cne, dob)
+                        except TypeError:
+                            res = engine.run_workflow(page, cne)
                 else:
                     res = {"status": "login_error", "extracted_email": None, "detail": f"Engine for {self.selected_engine} not found"}
 
@@ -346,7 +358,7 @@ class EduCheckerWindow(QMainWindow):
 
         self.build_ui()
         self.diagnostic("system", "startup", python=sys.version.split()[0], os=platform.platform())
-        self.log("Edu Checker Pro initialized successfully.")
+        self.log("Edu Checker Pro initialized successfully (IDLE State).")
 
     def panel(self, layout=None):
         panel = QFrame(objectName="panel")
@@ -440,7 +452,9 @@ class EduCheckerWindow(QMainWindow):
         engine_row = QHBoxLayout()
         engine_row.addWidget(QLabel("Select University Engine:"))
         self.engine_selector = QComboBox()
+        self.engine_selector.addItem("-- Please Select University --")
         self.engine_selector.addItems(list(UNIVERSITY_URLS.keys()))
+        self.engine_selector.setCurrentIndex(0)
         engine_row.addWidget(self.engine_selector, 1)
         v.addLayout(engine_row)
 
@@ -456,7 +470,7 @@ class EduCheckerWindow(QMainWindow):
 
             edit = QLineEdit()
             if attribute == "source_path":
-                edit.setPlaceholderText("Select source combo file (CNE:CNI:DOB)...")
+                edit.setPlaceholderText("Select source combo file...")
             else:
                 edit.setPlaceholderText("Select proxy text file...")
 
@@ -640,18 +654,40 @@ class EduCheckerWindow(QMainWindow):
         if not path.is_file():
             return
         lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        
+        while not self.combo_queue.empty():
+            try:
+                self.combo_queue.get_nowait()
+                self.combo_queue.task_done()
+            except queue.Empty:
+                break
+
         valid_count = 0
+        selected_uni = self.engine_selector.currentText()
+        
         for line in lines:
             line = line.strip()
-            if not line or line.startswith("#"):
+            if not line or line.startswith("#") or "CNE" in line.upper() or "MASSAR" in line.upper() or "CARTE" in line.upper() or "DATE" in line.upper() or "BAC" in line.upper():
                 continue
-            parts = line.split(":")
-            if len(parts) >= 3:
-                cne, cni, dob = parts[0].strip(), parts[1].strip(), parts[2].strip()
-                if cne and cni:
-                    self.combo_queue.put((cne, cni, dob))
+            parts = [p.strip() for p in line.split(":") if p.strip()]
+            
+            if len(parts) >= 4:
+                cne, cni, dob, bac = parts[0], parts[1], parts[2], parts[3]
+                if cne:
+                    self.combo_queue.put((cne, cni, dob, bac))
                     valid_count += 1
-        self.log(f"Loaded {valid_count} combos (CNE:CNI:DOB) from source file.")
+            elif len(parts) == 3:
+                cne, cni, dob = parts[0], parts[1], parts[2]
+                if cne:
+                    self.combo_queue.put((cne, cni, dob, ""))
+                    valid_count += 1
+            elif len(parts) == 2:
+                cne, dob = parts[0], parts[1]
+                if cne:
+                    self.combo_queue.put((cne, "", dob, ""))
+                    valid_count += 1
+                    
+        self.log(f"Loaded {valid_count} combos for [{selected_uni}] from source file.")
         self.loaded_label.setText(f"Loaded: {valid_count}")
 
     def browse_proxy(self):
@@ -673,13 +709,19 @@ class EduCheckerWindow(QMainWindow):
         return lines
 
     def start(self):
+        # التحقق الإجباري من اختيار الجامعة
+        selected_uni = self.engine_selector.currentText()
+        if not selected_uni or selected_uni.startswith("--"):
+            QMessageBox.warning(self, "University Selection Required", "⚠️ Please select a valid University Engine from the dropdown menu before starting!")
+            return
+
+        source_file = self.source_path.text().strip()
+        if source_file and Path(source_file).is_file():
+            self.load_source_combos(source_file)
+
         if self.combo_queue.empty():
-            source_file = self.source_path.text().strip()
-            if source_file and Path(source_file).is_file():
-                self.load_source_combos(source_file)
-            if self.combo_queue.empty():
-                QMessageBox.warning(self, "Source File", "Please select a valid source file containing CNE:CNI:DOB.")
-                return
+            QMessageBox.warning(self, "Source File", "Please select a valid source file containing valid combos.")
+            return
 
         if self.runtime_thread and self.runtime_thread.isRunning():
             return
@@ -712,7 +754,6 @@ class EduCheckerWindow(QMainWindow):
         self.results = []
         self.table.setRowCount(0)
         self.last_export_path = None
-        # توليد رمز فريد لكل جلسة فحص جديدة لضمان حفظ النتائج في ملفات مستقلة خاصة بهذه الجلسة
         self._export_session_token = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
         self._export_paths = {}
         self.threads.setEnabled(False)
