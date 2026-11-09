@@ -1,8 +1,8 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.17",
+  "version": "2.2.18",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.17",
+  "release_dir": "updates/releases/v2.2.18",
   "files": [
     {
       "path": "integrations/__init__.py",
@@ -74,11 +74,11 @@
     },
     {
       "path": "tools/checker.py",
-      "sha256": "2fb6145077c31980dc386e1ff5d294f01d3bea56ed616bcd5a1518542d482e74"
+      "sha256": "5e643e1611ba2caffac5ede8080ad338d1ffc02af5da041fc0e96392f22ae8dc"
     },
     {
       "path": "tools/edu_checker.py",
-      "sha256": "a0bae698dd7823a58e8348a662ae9115ae5f95a0d5d0ff6a0a3270c4d741d232"
+      "sha256": "ad5b6b14b9324717afc414dc045cc1ff95ea2d640dcbf9fbc969f665bbc0abc6"
     }
   ]
 }

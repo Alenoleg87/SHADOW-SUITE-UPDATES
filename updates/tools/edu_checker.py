@@ -337,6 +337,7 @@ class EduCheckerWindow(QMainWindow):
 
         self.proxy_pool = ProxyPool()
         self.combo_queue = queue.Queue()
+        self.total_loaded_combos = 0  # لتخزين العدد الإجمالي الحقيقي
 
         self.browser_status = []
         self.browser_show_buttons = []
@@ -552,16 +553,47 @@ class EduCheckerWindow(QMainWindow):
 
             header = QHBoxLayout()
             
-            # --- التعديل هنا: Label الديناميكي الملون المخصص للنتائج ---
             if is_results:
-                self.results_title_label = QLabel(
-                    '<span style="color: #dcdcdc; font-weight: bold;">Combo : 0</span>'
-                    '&nbsp;&nbsp;|&nbsp;&nbsp;'
-                    '<span style="color: #2ecc71; font-weight: bold;">Login OK : 0</span>'
-                    '&nbsp;&nbsp;|&nbsp;&nbsp;'
-                    '<span style="color: #e74c3c; font-weight: bold;">Login Error : 0</span>'
-                )
-                header.addWidget(self.results_title_label)
+                header.addWidget(QLabel("Results", objectName="section"))
+                header.addSpacing(10)
+                
+                # كادر Combo مستقل (فضي متناسق)
+                self.badge_combo = QLabel("Combo : 0 / 0")
+                self.badge_combo.setStyleSheet("""
+                    background: #3B4349;
+                    color: #C0C0C0;
+                    border: 1px solid #75828A;
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-weight: bold;
+                """)
+                header.addWidget(self.badge_combo)
+                header.addSpacing(6)
+                
+                # كادر أخضر مستقل لـ Login OK
+                self.badge_ok = QLabel("Login OK : 0")
+                self.badge_ok.setStyleSheet("""
+                    background: #315845;
+                    color: #C7F0D1;
+                    border: 1px solid #74B98C;
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-weight: bold;
+                """)
+                header.addWidget(self.badge_ok)
+                header.addSpacing(6)
+
+                # كادر أحمر مستقل لـ Login Error
+                self.badge_err = QLabel("Login Error : 0")
+                self.badge_err.setStyleSheet("""
+                    background: #57474A;
+                    color: #FFD4D0;
+                    border: 1px solid #997175;
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    font-weight: bold;
+                """)
+                header.addWidget(self.badge_err)
             else:
                 header.addWidget(QLabel(title, objectName="section"))
             
@@ -591,21 +623,21 @@ class EduCheckerWindow(QMainWindow):
 
         v.addLayout(panes, 1)
 
-    # --- دالة تحديث العنوان حيّاً بالألوان ---
+    # --- دوال تحديث الكوادر الحية ---
     def update_results_header_display(self):
-        total_combos = self.combo_queue.qsize() + len(self.results)
+        total_initial = self.total_loaded_combos
+        remaining_in_queue = self.combo_queue.qsize()
+        current_checked = max(0, total_initial - remaining_in_queue)
+        
         login_ok = sum(1 for r in self.results if r[2] == 'LOGIN OK')
         login_error = sum(1 for r in self.results if r[2] != 'LOGIN OK')
         
-        formatted_text = (
-            f'<span style="color: #dcdcdc; font-weight: bold;">Combo : {total_combos}</span>'
-            f'&nbsp;&nbsp;|&nbsp;&nbsp;'
-            f'<span style="color: #2ecc71; font-weight: bold;">Login OK : {login_ok}</span>'
-            f'&nbsp;&nbsp;|&nbsp;&nbsp;'
-            f'<span style="color: #e74c3c; font-weight: bold;">Login Error : {login_error}</span>'
-        )
-        if hasattr(self, 'results_title_label'):
-            self.results_title_label.setText(formatted_text)
+        if hasattr(self, 'badge_combo'):
+            self.badge_combo.setText(f"Combo : {current_checked} / {total_initial}")
+        if hasattr(self, 'badge_ok'):
+            self.badge_ok.setText(f"Login OK : {login_ok}")
+        if hasattr(self, 'badge_err'):
+            self.badge_err.setText(f"Login Error : {login_error}")
 
     def open_proxy_monitor(self):
         if self.proxy_monitor is None:
@@ -716,6 +748,7 @@ class EduCheckerWindow(QMainWindow):
                     self.combo_queue.put((cne, "", dob, ""))
                     valid_count += 1
                     
+        self.total_loaded_combos = valid_count
         self.log(f"Loaded {valid_count} combos for [{selected_uni}] from source file.")
         self.loaded_label.setText(f"Loaded: {valid_count}")
         self.update_results_header_display()
