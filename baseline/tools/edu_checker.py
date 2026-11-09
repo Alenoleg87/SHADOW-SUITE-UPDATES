@@ -546,12 +546,25 @@ class EduCheckerWindow(QMainWindow):
         panes = QHBoxLayout()
         panes.setSpacing(6)
 
-        for title, is_results in [("▤   Results", True), ("▤   Logs", False)]:
+        for title, is_results in [("Results", True), ("▤   Logs", False)]:
             column = QVBoxLayout()
             column.setContentsMargins(7, 6, 7, 6)
 
             header = QHBoxLayout()
-            header.addWidget(QLabel(title, objectName="section"))
+            
+            # --- التعديل هنا: Label الديناميكي الملون المخصص للنتائج ---
+            if is_results:
+                self.results_title_label = QLabel(
+                    '<span style="color: #dcdcdc; font-weight: bold;">Combo : 0</span>'
+                    '&nbsp;&nbsp;|&nbsp;&nbsp;'
+                    '<span style="color: #2ecc71; font-weight: bold;">Login OK : 0</span>'
+                    '&nbsp;&nbsp;|&nbsp;&nbsp;'
+                    '<span style="color: #e74c3c; font-weight: bold;">Login Error : 0</span>'
+                )
+                header.addWidget(self.results_title_label)
+            else:
+                header.addWidget(QLabel(title, objectName="section"))
+            
             header.addStretch()
             clear = QPushButton("♧  Clear")
             header.addWidget(clear)
@@ -577,6 +590,22 @@ class EduCheckerWindow(QMainWindow):
             panes.addWidget(self.panel(column), 1)
 
         v.addLayout(panes, 1)
+
+    # --- دالة تحديث العنوان حيّاً بالألوان ---
+    def update_results_header_display(self):
+        total_combos = self.combo_queue.qsize() + len(self.results)
+        login_ok = sum(1 for r in self.results if r[2] == 'LOGIN OK')
+        login_error = sum(1 for r in self.results if r[2] != 'LOGIN OK')
+        
+        formatted_text = (
+            f'<span style="color: #dcdcdc; font-weight: bold;">Combo : {total_combos}</span>'
+            f'&nbsp;&nbsp;|&nbsp;&nbsp;'
+            f'<span style="color: #2ecc71; font-weight: bold;">Login OK : {login_ok}</span>'
+            f'&nbsp;&nbsp;|&nbsp;&nbsp;'
+            f'<span style="color: #e74c3c; font-weight: bold;">Login Error : {login_error}</span>'
+        )
+        if hasattr(self, 'results_title_label'):
+            self.results_title_label.setText(formatted_text)
 
     def open_proxy_monitor(self):
         if self.proxy_monitor is None:
@@ -689,6 +718,7 @@ class EduCheckerWindow(QMainWindow):
                     
         self.log(f"Loaded {valid_count} combos for [{selected_uni}] from source file.")
         self.loaded_label.setText(f"Loaded: {valid_count}")
+        self.update_results_header_display()
 
     def browse_proxy(self):
         path, _ = QFileDialog.getOpenFileName(self, "Choose proxy list", "", "Text files (*.txt *.csv);;All files (*)")
@@ -709,7 +739,6 @@ class EduCheckerWindow(QMainWindow):
         return lines
 
     def start(self):
-        # التحقق الإجباري من اختيار الجامعة
         selected_uni = self.engine_selector.currentText()
         if not selected_uni or selected_uni.startswith("--"):
             QMessageBox.warning(self, "University Selection Required", "⚠️ Please select a valid University Engine from the dropdown menu before starting!")
@@ -772,6 +801,7 @@ class EduCheckerWindow(QMainWindow):
             self.proxy_monitor.reset(len(lines))
 
         self.update_counters()
+        self.update_results_header_display()
         self.start_btn.setEnabled(False)
 
         for index in range(len(self.browser_status)):
@@ -892,9 +922,9 @@ class EduCheckerWindow(QMainWindow):
             self.table.setItem(row, column, QTableWidgetItem(str(value)))
 
         self.auto_save_classified_result(record)
+        self.update_results_header_display()
 
     def auto_save_classified_result(self, record):
-        """Structured Auto-Save into session-specific files inside output/Edu_Checker/<University>/login_ok and login_error"""
         try:
             if getattr(sys, "frozen", False):
                 base = Path(sys.executable).resolve().parent
@@ -937,6 +967,7 @@ class EduCheckerWindow(QMainWindow):
             ("Proxy Pool: BYPASSED (DIRECT)" if self.direct_mode
              else f"Proxy Pool: {self.proxy_pool.stats()['available']} READY")
         )
+        self.update_results_header_display()
 
     def worker_finished(self, worker):
         if worker.lease is not None:
@@ -985,10 +1016,10 @@ class EduCheckerWindow(QMainWindow):
     def clear_results(self):
         self.table.setRowCount(0)
         self.results = []
+        self.update_results_header_display()
         self.log("[UI] Results cleared.")
 
     def open_file(self):
-        """Opens the selected university folder directly on the outside (e.g. output/Edu_Checker/<University>/)"""
         selected_uni = self.engine_selector.currentText()
         if getattr(sys, "frozen", False):
             base = Path(sys.executable).resolve().parent
