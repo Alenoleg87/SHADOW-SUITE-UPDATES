@@ -1,8 +1,8 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.19",
+  "version": "2.2.20",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.19",
+  "release_dir": "updates/releases/v2.2.20",
   "files": [
     {
       "path": "integrations/__init__.py",
@@ -42,11 +42,11 @@
     },
     {
       "path": "integrations/umi.py",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      "sha256": "c65ee5c11a9cdb6b7d5b4266dbc8dcb245f7e8ac2d2f99c32271d9d95c998c8d"
     },
     {
       "path": "integrations/ump.py",
-      "sha256": "1888c9b19ab91669be41cb47fedc27f99445ddd7b00c7fd979b6325e9cf4a805"
+      "sha256": "c5c4707e2c1016b5692bb3620be61c3aeba18d3cbd120982205a04c0f866d015"
     },
     {
       "path": "integrations/usmba.py",
@@ -70,7 +70,7 @@
     },
     {
       "path": "tools/adder.py",
-      "sha256": "804f15a2f1a4f44ac59ab6ac611ad58d68ac95cf09a2085c93ec529dcf3eb1c3"
+      "sha256": "a6380b3c1182cc8b931cee51bf0338f8d6a098b5acc04eb2b89321b86a8c00f8"
     },
     {
       "path": "tools/checker.py",
@@ -78,7 +78,7 @@
     },
     {
       "path": "tools/edu_checker.py",
-      "sha256": "ad5b6b14b9324717afc414dc045cc1ff95ea2d640dcbf9fbc969f665bbc0abc6"
+      "sha256": "61ece67dba4cd4ddbf7e27b6fdb82a6a0764f5e03b5a3f55a9e54d870e667c7e"
     }
   ]
 }

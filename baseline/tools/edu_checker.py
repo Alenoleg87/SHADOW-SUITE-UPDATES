@@ -279,12 +279,15 @@ class UniversityWorker(QThread):
                     engine = EngineClass()
                     
                     try:
-                        res = engine.run_workflow(page, cne, cni, dob)
+                        res = engine.run_workflow(page, cne, cni, dob, bac)
                     except TypeError:
                         try:
-                            res = engine.run_workflow(page, cne, dob)
+                            res = engine.run_workflow(page, cne, cni, dob)
                         except TypeError:
-                            res = engine.run_workflow(page, cne)
+                            try:
+                                res = engine.run_workflow(page, cne, dob)
+                            except TypeError:
+                                res = engine.run_workflow(page, cne)
                 else:
                     res = {"status": "login_error", "extracted_email": None, "detail": f"Engine for {self.selected_engine} not found"}
 
@@ -337,7 +340,8 @@ class EduCheckerWindow(QMainWindow):
 
         self.proxy_pool = ProxyPool()
         self.combo_queue = queue.Queue()
-        self.total_loaded_combos = 0  # لتخزين العدد الإجمالي الحقيقي
+        self.total_loaded_combos = 0
+        self._umi_default_bac = ""  # لتخزين سنة الباك الخاصة بجلسة UMI
 
         self.browser_status = []
         self.browser_show_buttons = []
@@ -557,7 +561,6 @@ class EduCheckerWindow(QMainWindow):
                 header.addWidget(QLabel("Results", objectName="section"))
                 header.addSpacing(10)
                 
-                # كادر Combo مستقل (فضي متناسق)
                 self.badge_combo = QLabel("Combo : 0 / 0")
                 self.badge_combo.setStyleSheet("""
                     background: #3B4349;
@@ -570,7 +573,6 @@ class EduCheckerWindow(QMainWindow):
                 header.addWidget(self.badge_combo)
                 header.addSpacing(6)
                 
-                # كادر أخضر مستقل لـ Login OK
                 self.badge_ok = QLabel("Login OK : 0")
                 self.badge_ok.setStyleSheet("""
                     background: #315845;
@@ -583,7 +585,6 @@ class EduCheckerWindow(QMainWindow):
                 header.addWidget(self.badge_ok)
                 header.addSpacing(6)
 
-                # كادر أحمر مستقل لـ Login Error
                 self.badge_err = QLabel("Login Error : 0")
                 self.badge_err.setStyleSheet("""
                     background: #57474A;
@@ -623,7 +624,6 @@ class EduCheckerWindow(QMainWindow):
 
         v.addLayout(panes, 1)
 
-    # --- دوال تحديث الكوادر الحية ---
     def update_results_header_display(self):
         total_initial = self.total_loaded_combos
         remaining_in_queue = self.combo_queue.qsize()
@@ -725,6 +725,7 @@ class EduCheckerWindow(QMainWindow):
 
         valid_count = 0
         selected_uni = self.engine_selector.currentText()
+        umi_default_bac = getattr(self, '_umi_default_bac', '') if selected_uni == "UMI" else ''
         
         for line in lines:
             line = line.strip()
@@ -734,18 +735,22 @@ class EduCheckerWindow(QMainWindow):
             
             if len(parts) >= 4:
                 cne, cni, dob, bac = parts[0], parts[1], parts[2], parts[3]
+                if not bac and umi_default_bac:
+                    bac = umi_default_bac
                 if cne:
                     self.combo_queue.put((cne, cni, dob, bac))
                     valid_count += 1
             elif len(parts) == 3:
                 cne, cni, dob = parts[0], parts[1], parts[2]
+                bac = umi_default_bac if umi_default_bac else ""
                 if cne:
-                    self.combo_queue.put((cne, cni, dob, ""))
+                    self.combo_queue.put((cne, cni, dob, bac))
                     valid_count += 1
             elif len(parts) == 2:
                 cne, dob = parts[0], parts[1]
+                bac = umi_default_bac if umi_default_bac else ""
                 if cne:
-                    self.combo_queue.put((cne, "", dob, ""))
+                    self.combo_queue.put((cne, "", dob, bac))
                     valid_count += 1
                     
         self.total_loaded_combos = valid_count
@@ -776,6 +781,20 @@ class EduCheckerWindow(QMainWindow):
         if not selected_uni or selected_uni.startswith("--"):
             QMessageBox.warning(self, "University Selection Required", "⚠️ Please select a valid University Engine from the dropdown menu before starting!")
             return
+
+        # إدراج نافذة الإشعار الخاصة بـ UMI وحدها عند الضغط على START
+        if selected_uni == "UMI":
+            default_bac, ok = QInputDialog.getText(
+                self, "UMI Session Baccalaureate Year", 
+                "أدخل سنة الباكالوريا الافتراضية الخاصة بـ UMI لهذه الجلسة (مثال: 2022):", 
+                QLineEdit.Normal, "2022"
+            )
+            if not ok:
+                return  # إلغاء التشغيل إذا ضغط المستخدم Cancel
+            self._umi_default_bac = default_bac.strip()
+            self.log(f"[UMI SESSION] Default Baccalaureate Year set to: {self._umi_default_bac}")
+        else:
+            self._umi_default_bac = ""
 
         source_file = self.source_path.text().strip()
         if source_file and Path(source_file).is_file():
