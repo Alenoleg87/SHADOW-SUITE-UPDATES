@@ -1,6 +1,6 @@
 """
-GMAIL RECOVERY ADDER — Compact & Multilingual Isolated Firefox Engine
-Adds recovery email to Google Accounts robustly across any language (EN, FR, AR, ES, etc.).
+GMAIL RECOVERY ADDER — Stealth Multilingual Firefox Engine
+Integrated with precise status classification (Recovery, PHONE, or ERROR).
 """
 
 import sys
@@ -97,9 +97,9 @@ class GmailRecoveryWorker(QThread):
                     
                 idx, email, password = item
                 
-                proxy_str = "Isolated Local Session"
-                self.status_signal.emit(1, "Launching Isolated Private Firefox...", proxy_str)
-                self.log_signal.emit(f"[Isolation Engine] Processing Account: {email}")
+                proxy_str = "Isolated Stealth Session"
+                self.status_signal.emit(1, "Launching Stealth Firefox...", proxy_str)
+                self.log_signal.emit(f"[Stealth Engine] Processing Account: {email}")
                 
                 status = "UNKNOWN"
                 recovery_status = "NOT ATTEMPTED"
@@ -112,11 +112,12 @@ class GmailRecoveryWorker(QThread):
                             'privacy.trackingprotection.pbmode.enabled': True,
                             'privacy.trackingprotection.fingerprinting.enabled': True,
                             'privacy.fingerprintingProtection': True,
-                            'privacy.resistFingerprinting': True,
+                            'privacy.resistFingerprinting': False,
                             'privacy.firstparty.isolate': True,
-                            'network.cookie.cookieBehavior': 5,
+                            'network.cookie.cookieBehavior': 0,
                             'browser.send_pings': False,
                             'beacon.enabled': False,
+                            'dom.webdriver.enabled': False,
                         }
 
                         launch_args = {
@@ -127,7 +128,13 @@ class GmailRecoveryWorker(QThread):
 
                         browser = p.firefox.launch(**launch_args)
                         self.current_browser = browser
-                        context = browser.new_context()
+                        
+                        context = browser.new_context(
+                            viewport={"width": 1366, "height": 768},
+                            locale="fr-FR",
+                            timezone_id="Africa/Casablanca",
+                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+                        )
                         page = context.new_page()
                         
                         self.status_signal.emit(1, "Opening Direct Recovery URL", proxy_str)
@@ -160,13 +167,20 @@ class GmailRecoveryWorker(QThread):
 
                             if status == "PASSWORD_STAGE":
                                 page.wait_for_timeout(1200)
-                                page.wait_for_selector('input[name="Passwd"], input[type="password"]', timeout=15000)
-                                page.click('input[name="Passwd"], input[type="password"]')
+                                
+                                pass_sel = 'input[type="password"]'
+                                try:
+                                    page.wait_for_selector(pass_sel, timeout=10000)
+                                except:
+                                    pass_sel = 'input[name="Passwd"]'
+                                    page.wait_for_selector(pass_sel, timeout=5000)
+
+                                page.click(pass_sel)
                                 page.wait_for_timeout(500)
                                 
                                 self.status_signal.emit(1, "Typing Password", proxy_str)
                                 for char in password:
-                                    page.type('input[name="Passwd"], input[type="password"]', char, delay=random.randint(100, 200))
+                                    page.type(pass_sel, char, delay=random.randint(100, 200))
                                     
                                 page.wait_for_timeout(1500)
                                 if page.locator('#passwordNext').is_visible():
@@ -176,22 +190,30 @@ class GmailRecoveryWorker(QThread):
                                     
                                 page.wait_for_timeout(6000)
                                 pt_pass = page.locator("body").inner_text().lower()
-                                if any(w in pt_pass for w in ["wrong password", "incorrect password", "كلمة المرور غير صحيحة", "try again"]):
+                                
+                                # رصد صفحة التحقق برقم الهاتف بدقة
+                                if "phone number" in pt_pass or "verify it's you" in pt_pass or "enter a phone number" in pt_pass:
+                                    status = "LOGIN OK"
+                                    recovery_status = "PHONE"
+                                elif any(w in pt_pass for w in ["wrong password", "incorrect password", "كلمة المرور غير صحيحة", "try again"]):
                                     status = "LOGIN ERROR"
+                                    recovery_status = "Get an Error"
+                                elif "challenge" in page.url or "captch" in pt_pass:
+                                    status = "CAPTCHA BLOCKED"
+                                    recovery_status = "Get an Error"
                                 else:
                                     status = "LOGIN OK"
                         else:
                             status = "LOGIN OK"
 
-                        # بمجرد حصول LOGIN OK، الدخول لصفحة الاسترداد والتعامل مع أي لغة تلقائياً
-                        if status == "LOGIN OK" and self.recovery_email:
+                        # المعالجة النهائية بناءً على الحالات المحددة
+                        if status == "LOGIN OK" and recovery_status != "PHONE" and self.recovery_email:
                             self.status_signal.emit(1, "Adding Recovery & Waiting Verification", proxy_str)
                             try:
                                 if 'recovery' not in page.url:
                                     page.goto("https://myaccount.google.com/recovery/email", timeout=45000, wait_until="load")
                                     page.wait_for_timeout(3000)
 
-                                # رصد زر الإضافة بمختلف اللغات (إنجليزي، فرنسي، عربي، إسباني...)
                                 for btn_sel in [
                                     'button:has-text("Ajouter")', 'button:has-text("Add")', 'button:has-text("Agregar")', 
                                     'button:has-text("Aggiungi")', 'button:has-text("إضافة")', 'button:has-text("إضافه")',
@@ -222,7 +244,6 @@ class GmailRecoveryWorker(QThread):
                                         email_input.type(char, delay=random.randint(80, 150))
                                     page.wait_for_timeout(800)
                                     
-                                    # رصد زر الحفظ بمختلف اللغات
                                     saved_ok = False
                                     for save_sel in [
                                         'button:has-text("Enregistrer")', 'button:has-text("Save")', 'button:has-text("Guardar")',
@@ -246,12 +267,15 @@ class GmailRecoveryWorker(QThread):
                                     
                                     recovery_status = "Recovery Added Successfully"
                                 else:
+                                    status = "LOGIN ERROR"
                                     recovery_status = "Get an Error"
                             except Exception as rec_ex:
                                 self.log_signal.emit(f"[RECOVERY ERROR] {str(rec_ex)}")
+                                status = "LOGIN ERROR"
                                 recovery_status = "Get an Error"
-                        else:
-                            recovery_status = "Not Attempted"
+                        elif recovery_status != "PHONE":
+                            status = "LOGIN ERROR"
+                            recovery_status = "Get an Error"
 
                         self.status_signal.emit(1, f"Finished: {status}", proxy_str)
                         self.result_signal.emit(idx, email, status, recovery_status, proxy_str)
@@ -276,7 +300,7 @@ class GmailRecoveryWorker(QThread):
 class GmailRecoveryWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('GMAIL RECOVERY ADDER — Multilingual Compact Engine')
+        self.setWindowTitle('GMAIL RECOVERY ADDER — Stealth Multilingual Firefox Engine')
         self.resize(800, 500); self.setMinimumSize(720, 440)
         self.setStyleSheet(CSS)
         self.records = []; self.results = []; self.worker = None
@@ -290,7 +314,7 @@ class GmailRecoveryWindow(QWidget):
         self.browser_visible = True
         
         self.build()
-        self.log('Ready — Multilingual Compact Firefox Engine initialized.')
+        self.log('Ready — Stealth Multilingual Firefox Engine initialized.')
 
     def log(self, message):
         self.logs.appendPlainText(f'[{datetime.now():%H:%M:%S}]  {message}')
@@ -327,14 +351,14 @@ class GmailRecoveryWindow(QWidget):
         right.addStretch(); main_controls.addLayout(right, 1); outer.addLayout(main_controls)
 
         browsers = panel(); bv = QVBoxLayout(browsers); bv.setContentsMargins(6,4,6,4); bv.setSpacing(3)
-        bh = row(label('◎   Live Browser Card (Multilingual Single-Thread)','heading'))
+        bh = row(label('◎   Live Stealth Browser Card','heading'))
         bh.addStretch()
         bv.addLayout(bh)
         
         self.browser_card_layout = QHBoxLayout()
         card = panel(); cl = QVBoxLayout(card); cl.setContentsMargins(8,4,8,4); cl.setSpacing(3)
         self.status_lbl = label('● Idle', 'muted')
-        cl.addLayout(row(label('Firefox Instance #1', 'heading'), self.status_lbl))
+        cl.addLayout(row(label('Stealth Firefox Instance #1', 'heading'), self.status_lbl))
         self.visibility_lbl = label('Status: Ready', 'muted'); self.visibility_lbl.setAlignment(Qt.AlignCenter)
         cl.addLayout(row(btn('◉̸ Hide', lambda: self.toggle_browser(False)),
                          btn('◉ Show', lambda: self.toggle_browser(True), 'outline')))
@@ -417,7 +441,7 @@ class GmailRecoveryWindow(QWidget):
         self.worker.status_signal.connect(self.update_browser_status)
         self.worker.start()
         
-        self.log('Started multilingual compact recovery engine...', component='AUTOMATION')
+        self.log('Started stealth multilingual recovery engine...', component='AUTOMATION')
 
     def stop_process(self):
         if self.worker:

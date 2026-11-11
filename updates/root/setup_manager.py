@@ -1,7 +1,6 @@
-
 """
 SHADOW SUITE PRO — Setup Manager
-Windows / Firefox / Automatic Dependency Repair
+Windows / Firefox & Camoufox / Automatic Dependency Repair
 
 Compatible with the existing main.py:
     SetupWorker(install=False, parent=None)
@@ -34,6 +33,7 @@ REQUIRED_PACKAGES = {
     "openpyxl": "openpyxl>=3.1,<4",
     "playwright": "playwright>=1.50,<2",
     "requests": "requests>=2.31,<3",
+    "camoufox": "camoufox>=0.4",
 }
 
 MICROSOFT_VC_URL = (
@@ -83,11 +83,6 @@ if not logger.handlers:
 
 
 def configure_portable_temp():
-    """Use a writable TEMP/TMP directory even in Windows RDP sessions.
-
-    RDP may expose a stale Temp/2 path. Node's mkdtemp used by
-    Playwright requires the parent directory to already exist.
-    """
     candidates = [
         ROOT / "temp",
         Path(tempfile.gettempdir()) / "shadow_suite_pro",
@@ -117,29 +112,29 @@ def configure_portable_browser():
 
 def missing_python_packages():
     missing = []
-
     for module, package in REQUIRED_PACKAGES.items():
         try:
             if importlib.util.find_spec(module) is None:
                 missing.append(package)
         except (ImportError, ValueError):
             missing.append(package)
-
     return missing
 
 
-def get_firefox_path():
-    from playwright.sync_api import sync_playwright
+def test_camoufox_browser(timeout_ms=45000):
+    """
+    Launch Camoufox smoke test to confirm binaries and anti-bot hooks are working.
+    """
+    from camoufox.sync_api import Camoufox
 
-    with sync_playwright() as playwright:
-        return Path(playwright.firefox.executable_path)
+    with Camoufox(headless=True) as browser:
+        page = browser.new_page()
+        page.goto("about:blank", timeout=15000)
+        if page.url != "about:blank":
+            raise RuntimeError("Camoufox browser smoke test failed.")
 
 
 def test_firefox(timeout_ms=45000):
-    """
-    Actually launch Firefox and open a local blank page.
-    """
-
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
@@ -147,34 +142,22 @@ def test_firefox(timeout_ms=45000):
             headless=True,
             timeout=timeout_ms,
         )
-
         try:
             page = browser.new_page()
             page.goto("about:blank", timeout=15000)
-
             if page.url != "about:blank":
-                raise RuntimeError(
-                    "Firefox smoke test failed."
-                )
+                raise RuntimeError("Firefox smoke test failed.")
         finally:
             browser.close()
 
 
-def verify_firefox_with_retry():
-    """Verify Playwright Firefox with one automatic retry for startup timeouts.
-
-    Slow Windows/RDP sessions can launch the Firefox process but not finish
-    the Playwright handshake within the old 20-second timeout. A timeout is
-    not evidence that Microsoft VC++ libraries are missing.
-    """
+def verify_browsers_with_retry():
     launch_timeouts_ms = (45000, 60000)
     for attempt, timeout_ms in enumerate(launch_timeouts_ms, start=1):
-        logger.info(
-            "Firefox smoke test attempt %s/%s; launch timeout=%sms",
-            attempt, len(launch_timeouts_ms), timeout_ms,
-        )
+        logger.info("Browser smoke test attempt %s/%s", attempt, len(launch_timeouts_ms))
         try:
             test_firefox(timeout_ms=timeout_ms)
+            test_camoufox_browser(timeout_ms=timeout_ms)
             return
         except Exception as exc:
             message = str(exc).lower()
@@ -186,61 +169,35 @@ def verify_firefox_with_retry():
             if not timed_out or attempt == len(launch_timeouts_ms):
                 raise
             logger.warning(
-                "Firefox startup timed out on attempt %s; "
-                "retrying automatically in 2 seconds. Error: %s",
+                "Browser startup timed out on attempt %s; retrying in 2 seconds. Error: %s",
                 attempt, exc,
             )
             time.sleep(2)
 
 
 def missing_dlls_from_error(error_text):
-    """
-    Extract missing Windows DLL names from Playwright's
-    dependency error.
-
-    Do not automatically install unknown DLL packages.
-    """
-
     match = re.search(
         r"Full list of missing libraries:\s*(.*?)(?:\n\s*\n|$)",
         error_text,
         flags=re.IGNORECASE | re.DOTALL,
     )
-
     if not match:
         return []
-
     names = re.findall(
         r"\b[a-zA-Z0-9_-]+\.dll\b",
         match.group(1),
         flags=re.IGNORECASE,
     )
-
     return sorted(set(name.lower() for name in names))
 
 
 def powershell_path():
-    system_root = Path(
-        os.environ.get("SystemRoot", r"C:\Windows")
-    )
-
-    return str(
-        system_root
-        / "System32"
-        / "WindowsPowerShell"
-        / "v1.0"
-        / "powershell.exe"
-    )
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    return str(system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
 
 
 def verify_microsoft_signature(file_path):
-    """
-    Verify Windows Authenticode signature before execution.
-    Only a valid Microsoft-signed installer is accepted.
-    """
-
     path = str(file_path).replace("'", "''")
-
     script = (
         f"$s=Get-AuthenticodeSignature -LiteralPath '{path}';"
         "if ($s.Status -ne 'Valid') { exit 2 };"
@@ -250,7 +207,6 @@ def verify_microsoft_signature(file_path):
         "{ exit 4 };"
         "exit 0"
     )
-
     result = subprocess.run(
         [
             powershell_path(),
@@ -264,36 +220,17 @@ def verify_microsoft_signature(file_path):
         capture_output=True,
         text=True,
         timeout=45,
-        creationflags=getattr(
-            subprocess,
-            "CREATE_NO_WINDOW",
-            0,
-        ),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-
     if result.returncode != 0:
-        raise RuntimeError(
-            "Microsoft installer signature verification "
-            "failed. Installation was cancelled."
-        )
+        raise RuntimeError("Microsoft installer signature verification failed.")
 
 
 def install_firefox_in_frozen_app():
-    """
-    Used by main.py --install-firefox.
-    """
-
     configure_portable_temp()
     configure_portable_browser()
-
     from playwright.__main__ import main as playwright_main
-
-    sys.argv = [
-        "playwright",
-        "install",
-        "firefox",
-    ]
-
+    sys.argv = ["playwright", "install", "firefox"]
     playwright_main()
 
 
@@ -304,17 +241,10 @@ class SetupWorker(QThread):
 
     def __init__(self, install=False, parent=None):
         super().__init__(parent)
-
         self.install = install
 
     def report(self, percent, title, detail):
-        logger.info(
-            "%s%% | %s | %s",
-            percent,
-            title,
-            detail,
-        )
-
+        logger.info("%s%% | %s | %s", percent, title, detail)
         self.progress.emit(percent, title, detail)
 
     def fail(self, message, repairable=False):
@@ -322,17 +252,10 @@ class SetupWorker(QThread):
         self.done.emit(False, message, repairable)
 
     def run_process(self, command, title, percent):
-        self.report(
-            percent,
-            title,
-            "Running installer...",
-        )
-
-        # Child processes inherit the repaired TEMP/TMP and browser path.
+        self.report(percent, title, "Running installer...")
         configure_portable_temp()
         configure_portable_browser()
         child_env = os.environ.copy()
-        logger.info("Launching %s with TEMP=%s", title, child_env.get("TEMP"))
         result = subprocess.run(
             command,
             env=child_env,
@@ -340,163 +263,84 @@ class SetupWorker(QThread):
             text=True,
             errors="replace",
             timeout=900,
-            creationflags=getattr(
-                subprocess,
-                "CREATE_NO_WINDOW",
-                0,
-            ),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-
-        output = (
-            result.stdout + "\n" + result.stderr
-        ).strip()
-
+        output = (result.stdout + "\n" + result.stderr).strip()
         if output:
-            logger.info(
-                "%s output:\n%s",
-                title,
-                output[-5000:],
-            )
-
+            logger.info("%s output:\n%s", title, output[-5000:])
         if result.returncode != 0:
-            raise RuntimeError(
-                f"{title} failed "
-                f"(exit code {result.returncode}). "
-                f"{output[-300:]}"
-            )
+            raise RuntimeError(f"{title} failed (exit code {result.returncode}). {output[-300:]}")
 
     def install_packages(self, missing):
-        # Install only into the private, portable Python runtime.
         runtime_python = ROOT / "runtime" / "python.exe"
         python = str(runtime_python if runtime_python.is_file() else Path(sys.executable))
         self.run_process(
             [python, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *missing],
-            "Installing missing Python packages", 20,
+            "Installing missing Python packages (including Camoufox)", 20,
         )
         importlib.invalidate_caches()
 
-    def install_firefox(self):
-        self.report(60, "Preparing Firefox installation...", "Checking writable temporary storage...")
-        configure_portable_temp()
-        configure_portable_browser()
+    def install_browsers(self):
         runtime_python = ROOT / "runtime" / "python.exe"
         python = str(runtime_python if runtime_python.is_file() else Path(sys.executable))
+
+        # 1. Install Playwright standard Firefox
+        self.report(50, "Installing Playwright Firefox...", "Downloading Firefox browser binaries...")
         self.run_process(
             [python, "-m", "playwright", "install", "firefox"],
-            "Installing Playwright Firefox", 65,
+            "Installing Playwright Firefox", 55,
+        )
+
+        # 2. Fetch Camoufox browser binaries
+        self.report(65, "Installing Camoufox Engine...", "Downloading anti-detection Camoufox binaries...")
+        self.run_process(
+            [python, "-m", "camoufox", "fetch"],
+            "Fetching Camoufox Binaries", 75,
         )
 
     def download_vc_runtime(self, destination):
-        """
-        Download Microsoft's official x64 redistributable.
-        """
-
-        self.report(
-            45,
-            "Downloading Windows runtime...",
-            "Downloading official Microsoft installer...",
-        )
-
+        self.report(45, "Downloading Windows runtime...", "Downloading official Microsoft installer...")
         request = urllib.request.Request(
             MICROSOFT_VC_URL,
-            headers={
-                "User-Agent": "SHADOW-SUITE-Setup/1.0"
-            },
+            headers={"User-Agent": "SHADOW-SUITE-Setup/1.0"},
         )
-
-        with urllib.request.urlopen(
-            request,
-            timeout=45,
-        ) as response:
-
+        with urllib.request.urlopen(request, timeout=45) as response:
             final_url = response.geturl()
-
             if not final_url.startswith("https://"):
-                raise RuntimeError(
-                    "Installer download did not use HTTPS."
-                )
-
+                raise RuntimeError("Installer download did not use HTTPS.")
             downloaded = 0
-
             with open(destination, "wb") as output:
                 while True:
                     chunk = response.read(1024 * 256)
-
                     if not chunk:
                         break
-
                     downloaded += len(chunk)
-
                     if downloaded > MAX_DOWNLOAD_SIZE:
-                        raise RuntimeError(
-                            "Installer download exceeded "
-                            "the allowed size."
-                        )
-
+                        raise RuntimeError("Installer download exceeded the allowed size.")
                     output.write(chunk)
-
         if downloaded < 100_000:
-            raise RuntimeError(
-                "Microsoft installer download is incomplete."
-            )
-
-        self.report(
-            55,
-            "Verifying installer...",
-            "Checking Microsoft's digital signature...",
-        )
-
+            raise RuntimeError("Microsoft installer download is incomplete.")
+        self.report(55, "Verifying installer...", "Checking Microsoft's digital signature...")
         verify_microsoft_signature(destination)
 
     def repair_windows_runtime(self):
-        """
-        Install or repair the official Microsoft VC++
-        Redistributable.
-
-        Windows may request UAC elevation.
-        """
-
         if sys.platform != "win32":
-            raise RuntimeError(
-                "This repair requires Windows."
-            )
-
-        if platform.machine().lower() not in (
-            "amd64",
-            "x86_64",
-        ):
-            raise RuntimeError(
-                "This installer supports Windows x64 only."
-            )
+            raise RuntimeError("This repair requires Windows.")
+        if platform.machine().lower() not in ("amd64", "x86_64"):
+            raise RuntimeError("This installer supports Windows x64 only.")
 
         configure_portable_temp()
-        with tempfile.TemporaryDirectory(
-            prefix="shadow_setup_"
-        ) as directory:
-
-            installer = (
-                Path(directory) / "vc_redist.x64.exe"
-            )
-
+        with tempfile.TemporaryDirectory(prefix="shadow_setup_") as directory:
+            installer = Path(directory) / "vc_redist.x64.exe"
             self.download_vc_runtime(installer)
-
-            self.report(
-                65,
-                "Repairing Windows runtime...",
-                "Windows may request administrator approval...",
-            )
-
-            # PowerShell starts the official signed installer
-            # with elevation and waits for completion.
+            self.report(65, "Repairing Windows runtime...", "Windows may request administrator approval...")
             path = str(installer).replace("'", "''")
-
             script = (
                 f"$p=Start-Process -FilePath '{path}' "
                 "-ArgumentList '/repair /quiet /norestart' "
                 "-Verb RunAs -Wait -PassThru -ErrorAction Stop;"
                 "exit $p.ExitCode"
             )
-
             result = subprocess.run(
                 [
                     powershell_path(),
@@ -510,27 +354,16 @@ class SetupWorker(QThread):
                 capture_output=True,
                 text=True,
                 timeout=900,
-                creationflags=getattr(
-                    subprocess,
-                    "CREATE_NO_WINDOW",
-                    0,
-                ),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-
             if result.returncode not in (0, 3010):
-                logger.warning(
-                    "Repair returned %s; trying install.",
-                    result.returncode,
-                )
-
+                logger.warning("Repair returned %s; trying install.", result.returncode)
                 script = (
                     f"$p=Start-Process -FilePath '{path}' "
                     "-ArgumentList '/install /quiet /norestart' "
-                    "-Verb RunAs -Wait -PassThru "
-                    "-ErrorAction Stop;"
+                    "-Verb RunAs -Wait -PassThru -ErrorAction Stop;"
                     "exit $p.ExitCode"
                 )
-
                 result = subprocess.run(
                     [
                         powershell_path(),
@@ -544,37 +377,14 @@ class SetupWorker(QThread):
                     capture_output=True,
                     text=True,
                     timeout=900,
-                    creationflags=getattr(
-                        subprocess,
-                        "CREATE_NO_WINDOW",
-                        0,
-                    ),
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
-
             if result.returncode not in (0, 3010):
-                logger.error(
-                    "VC++ installer failed: %s | %s",
-                    result.stdout,
-                    result.stderr,
-                )
-
-                raise RuntimeError(
-                    "Microsoft Visual C++ repair failed "
-                    f"(code {result.returncode}). "
-                    "See logs/setup.log."
-                )
-
+                raise RuntimeError(f"Microsoft Visual C++ repair failed (code {result.returncode}).")
             if result.returncode == 3010:
-                raise RuntimeError(
-                    "Microsoft Visual C++ was installed. "
-                    "Restart Windows, then click Recheck."
-                )
+                raise RuntimeError("Microsoft Visual C++ was installed. Restart Windows, then click Recheck.")
 
-        self.report(
-            80,
-            "Windows runtime repaired",
-            "Rechecking Firefox...",
-        )
+        self.report(80, "Windows runtime repaired", "Rechecking browsers...")
 
     def run(self):
         try:
@@ -582,21 +392,10 @@ class SetupWorker(QThread):
             logger.info("SHADOW SUITE PRO — Setup started")
             logger.info("Windows: %s", platform.platform())
             logger.info("Python: %s", sys.version)
-            logger.info(
-                "Frozen EXE: %s",
-                getattr(sys, "frozen", False),
-            )
 
-            self.report(
-                5,
-                "Checking requirements...",
-                "Checking Python packages...",
-            )
-
+            self.report(5, "Checking requirements...", "Checking Python packages...")
             if sys.version_info < (3, 10):
-                self.fail(
-                    "Python 3.10 or newer is required."
-                )
+                self.fail("Python 3.10 or newer is required.")
                 return
 
             self.report(10, "Preparing environment...", "Repairing portable TEMP/TMP paths...")
@@ -606,152 +405,63 @@ class SetupWorker(QThread):
 
             if missing:
                 if not self.install:
-                    self.fail(
-                        "Missing Python packages: "
-                        + ", ".join(missing),
-                        True,
-                    )
+                    self.fail("Missing Python packages: " + ", ".join(missing), True)
                     return
-
                 self.install_packages(missing)
-
                 if missing_python_packages():
-                    self.fail(
-                        "Python packages are still missing."
-                    )
+                    self.fail("Python packages are still missing.")
                     return
 
-            self.report(
-                35,
-                "Checking Firefox...",
-                "Looking for Playwright Firefox...",
-            )
-
-            browser_path = get_firefox_path()
-
-            if not browser_path.is_file():
-                if not self.install:
-                    self.fail(
-                        "Playwright Firefox is missing. "
-                        "Click Install Now.",
-                        True,
-                    )
-                    return
-
-                self.install_firefox()
-
-                if not get_firefox_path().is_file():
-                    self.fail(
-                        "Firefox installation was not verified."
-                    )
-                    return
-
-            self.report(
-                90,
-                "Verifying Firefox...",
-                "Launching Firefox...",
-            )
+            self.report(35, "Checking browsers...", "Verifying Playwright Firefox & Camoufox...")
+            need_browser_install = False
 
             try:
-                verify_firefox_with_retry()
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as playwright:
+                    if not Path(playwright.firefox.executable_path).is_file():
+                        need_browser_install = True
+            except Exception:
+                need_browser_install = True
 
+            try:
+                import camoufox
+            except ImportError:
+                need_browser_install = True
+
+            if need_browser_install:
+                if not self.install:
+                    self.fail("Firefox or Camoufox binaries missing. Click Install Now.", True)
+                    return
+                self.install_browsers()
+
+            self.report(85, "Verifying browsers...", "Launching Firefox and Camoufox test...")
+            try:
+                verify_browsers_with_retry()
             except Exception as exc:
                 error_text = str(exc)
+                logger.error("Browser launch failure:\n%s", traceback.format_exc())
+                missing_dlls = missing_dlls_from_error(error_text)
 
-                logger.error(
-                    "Firefox launch failure:\n%s",
-                    traceback.format_exc(),
-                )
-
-                missing_dlls = missing_dlls_from_error(
-                    error_text
-                )
-
-                if missing_dlls:
-                    logger.warning(
-                        "Missing Windows libraries: %s",
-                        ", ".join(missing_dlls),
-                    )
-
-                vc_missing = [
-                    name
-                    for name in missing_dlls
-                    if name in VC_RUNTIME_DLLS
-                ]
-
-                unknown = [
-                    name
-                    for name in missing_dlls
-                    if name not in VC_RUNTIME_DLLS
-                ]
+                vc_missing = [name for name in missing_dlls if name in VC_RUNTIME_DLLS]
+                unknown = [name for name in missing_dlls if name not in VC_RUNTIME_DLLS]
 
                 if unknown:
-                    self.fail(
-                        "Firefox requires additional Windows "
-                        "libraries: "
-                        + ", ".join(unknown)
-                        + ". See logs/setup.log.",
-                        False,
-                    )
+                    self.fail("Browser requires additional Windows libraries: " + ", ".join(unknown), False)
                     return
 
                 if vc_missing:
                     if not self.install:
-                        self.fail(
-                            "Missing Microsoft Visual C++ "
-                            "libraries: "
-                            + ", ".join(vc_missing)
-                            + ". Click Install Now.",
-                            True,
-                        )
+                        self.fail("Missing Microsoft Visual C++ libraries: " + ", ".join(vc_missing), True)
                         return
-
                     self.repair_windows_runtime()
-
-                    # Verify once after repair.
-                    # Do not repeatedly install dependencies.
-                    verify_firefox_with_retry()
-
+                    verify_browsers_with_retry()
                 else:
-                    if "timeout" in error_text.lower():
-                        self.fail(
-                            "Firefox startup timed out after automatic "
-                            "retries. This does not indicate missing "
-                            "Microsoft VC++ libraries. "
-                            "See logs/setup.log.",
-                            False,
-                        )
-                    else:
-                        self.fail(
-                            "Firefox failed to launch. "
-                            "The cause is not a recognized "
-                            "Microsoft VC++ dependency. "
-                            "See logs/setup.log.",
-                            False,
-                        )
+                    self.fail(f"Browser launch failed: {error_text[:200]}", False)
                     return
 
-            self.report(
-                100,
-                "System Ready",
-                "Firefox launched successfully.",
-            )
-
-            self.done.emit(
-                True,
-                "All required components are installed "
-                "and Firefox is working.",
-                False,
-            )
+            self.report(100, "System Ready", "All browsers and Camoufox engines ready.")
+            self.done.emit(True, "All requirements and Camoufox are installed and verified.", False)
 
         except Exception as exc:
-            logger.error(
-                "Setup failed:\n%s",
-                traceback.format_exc(),
-            )
-
-            self.fail(
-                f"Setup failed: {str(exc)[:260]} "
-                "Details: logs/setup.log",
-                False,
-            )
+            logger.error("Setup failed:\n%s", traceback.format_exc())
+            self.fail(f"Setup failed: {str(exc)[:260]} Details: logs/setup.log", False)
