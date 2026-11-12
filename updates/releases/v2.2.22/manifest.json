@@ -1,0 +1,84 @@
+{
+  "app": "SHADOW-SUITE-PRO",
+  "version": "2.2.22",
+  "channel": "stable",
+  "release_dir": "updates/releases/v2.2.22",
+  "files": [
+    {
+      "path": "integrations/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "integrations/browser_identity.py",
+      "sha256": "c0cb086d77b1fa7d7aad7eee4005efc0c43b009d1954161d116ced1a8cdbcca6"
+    },
+    {
+      "path": "integrations/proxy_only_gui.py",
+      "sha256": "b678c36af5f42b3da43013b53ed25c15e2ffe669e359477b086fb6b1679da372"
+    },
+    {
+      "path": "integrations/proxy_pool.py",
+      "sha256": "aa060a31508b3ce40ea4906d726ebf43bf4ebccc5355a30199b133122046205c"
+    },
+    {
+      "path": "integrations/proxy_runtime.py",
+      "sha256": "ef59f2a4ca9bc3e90ba68c792461c8c90bd783dfc00598495a499d9461fa6582"
+    },
+    {
+      "path": "integrations/system_diagnostic.py",
+      "sha256": "7d66e82850691af6311938a9794dba010c3d1d245518f3af70b2aff7d972b3cd"
+    },
+    {
+      "path": "integrations/uae.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "integrations/uca.py",
+      "sha256": "47505ed00bfe5822cb42e230033562e8fe81e8d0332fb0f05af64bec857852ec"
+    },
+    {
+      "path": "integrations/uit.py",
+      "sha256": "2383aa3439c5d185fb6446e30c54ad95cca6b423cf115129bf8e8d38e9567241"
+    },
+    {
+      "path": "integrations/umi.py",
+      "sha256": "c65ee5c11a9cdb6b7d5b4266dbc8dcb245f7e8ac2d2f99c32271d9d95c998c8d"
+    },
+    {
+      "path": "integrations/ump.py",
+      "sha256": "645803fd41dfc8c47ea22fbd7d506bcccbec5204f95cd6b8768cd9b69aaab39c"
+    },
+    {
+      "path": "integrations/usmba.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "integrations/worker_liveviewer.py",
+      "sha256": "4db90eaefb8845497f438fa4812484874f30ea09dfc9faf6ecb4672d34cd37a6"
+    },
+    {
+      "path": "root/module_loader.py",
+      "sha256": "619e2860fdd0266b99fa1b5516aea6b94a7871e94051d613b7c3a7ffbe95b98c"
+    },
+    {
+      "path": "root/setup_manager.py",
+      "sha256": "ab44e3a8debde55db3376b9b740e06bb4e76dfc6a8b98d3b9e93509c8501aac1"
+    },
+    {
+      "path": "tools/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tools/adder.py",
+      "sha256": "d55523f195033f79aef059b08951d5398024ab5289c4995a30eca5bdd901a7a2"
+    },
+    {
+      "path": "tools/checker.py",
+      "sha256": "5e643e1611ba2caffac5ede8080ad338d1ffc02af5da041fc0e96392f22ae8dc"
+    },
+    {
+      "path": "tools/edu_checker.py",
+      "sha256": "61ece67dba4cd4ddbf7e27b6fdb82a6a0764f5e03b5a3f55a9e54d870e667c7e"
+    }
+  ]
+}
