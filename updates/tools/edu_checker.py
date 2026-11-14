@@ -51,7 +51,6 @@ UNIVERSITY_URLS = {
     "USMBA": "http://messagerie.usmba.ac.ma/"
 }
 
-# تحميل آمن وديناميكي لمحركات الجامعات
 ENGINES = {}
 try:
     from integrations.uit import UITEngine, LoginState
@@ -205,6 +204,7 @@ class UniversityWorker(QThread):
     status_signal = Signal(int, str, str)
     result_signal = Signal(str, str, str, str)
     log_signal = Signal(str)
+    diag_signal = Signal(str, str, dict)
 
     def __init__(self, browser_id, proxy, protocol, expected_ip,
                  lease=None, direct=False, combo_queue=None, selected_engine="UIT", headless=True):
@@ -229,6 +229,8 @@ class UniversityWorker(QThread):
         proxy_label = "DIRECT" if self.direct else self.proxy.label
         target_url = UNIVERSITY_URLS.get(self.selected_engine, UNIVERSITY_URLS["UIT"])
 
+        self.diag_signal.emit("worker", "thread_started", {"browser_id": self.browser_id, "engine": self.selected_engine, "proxy": proxy_label})
+
         if self.combo_queue is None or self.combo_queue.empty():
             return
 
@@ -246,6 +248,7 @@ class UniversityWorker(QThread):
         self.status_signal.emit(self.browser_id, f"CHECKING {masked_cne}", proxy_label)
         mode_str = "VISIBLE (SHOW)" if not self.headless else "BACKGROUND (HIDE)"
         self.log_signal.emit(f"[{label}] Opening [{self.selected_engine}] in {mode_str} for CNE: {masked_cne}")
+        self.diag_signal.emit("worker", "checking_combo", {"cne_masked": masked_cne, "engine": self.selected_engine, "mode": mode_str})
 
         proxy_config = None
         if not self.direct and self.proxy and self.protocol:
@@ -271,28 +274,37 @@ class UniversityWorker(QThread):
                 )
                 page = context.new_page()
 
+                self.diag_signal.emit("playwright", "navigating", {"url": target_url})
                 page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
                 page.wait_for_timeout(1000)
 
                 EngineClass = ENGINES.get(self.selected_engine)
                 if EngineClass:
                     engine = EngineClass()
-                    
                     try:
-                        res = engine.run_workflow(page, cne, cni, dob, bac)
-                    except TypeError:
-                        try:
+                        self.diag_signal.emit("engine", "invoking", {"engine_name": self.selected_engine})
+                        if self.selected_engine == "UMI":
+                            res = engine.run_workflow(page, cne, cni, dob, bac)
+                        elif self.selected_engine in ["UIT", "UAE", "USMBA"]:
                             res = engine.run_workflow(page, cne, cni, dob)
-                        except TypeError:
-                            try:
-                                res = engine.run_workflow(page, cne, dob)
-                            except TypeError:
-                                res = engine.run_workflow(page, cne)
+                        elif self.selected_engine in ["UCA", "UMP"]:
+                            res = engine.run_workflow(page, cne, dob)
+                        else:
+                            res = engine.run_workflow(page, cne)
+                        self.diag_signal.emit("engine", "success", {"result": str(res)})
+                    except Exception as engine_err:
+                        tb = traceback.format_exc()
+                        err_msg = f"{type(engine_err).__name__}: {str(engine_err)}"
+                        self.diag_signal.emit("engine", "exception", {"error": err_msg, "traceback": tb})
+                        res = {"status": "login_error", "extracted_email": None, "detail": f"Engine error: {err_msg}"}
                 else:
                     res = {"status": "login_error", "extracted_email": None, "detail": f"Engine for {self.selected_engine} not found"}
 
             except Exception as play_err:
-                res = {"status": "login_error", "extracted_email": None, "detail": f"Execution error: {type(play_err).__name__}"}
+                tb = traceback.format_exc()
+                err_msg = f"{type(play_err).__name__}: {str(play_err)}"
+                self.diag_signal.emit("playwright", "exception", {"error": err_msg, "traceback": tb})
+                res = {"status": "login_error", "extracted_email": None, "detail": f"Execution error: {err_msg}"}
             finally:
                 try:
                     if context:
@@ -316,6 +328,7 @@ class UniversityWorker(QThread):
 
         self.result_signal.emit(cne, cni, display_status, display_detail)
         self.log_signal.emit(f"[{label}] Result -> {display_status} [{display_detail}]")
+        self.diag_signal.emit("worker", "result_emitted", {"status": display_status, "detail": str(display_detail)})
         self.combo_queue.task_done()
 
 
@@ -341,7 +354,7 @@ class EduCheckerWindow(QMainWindow):
         self.proxy_pool = ProxyPool()
         self.combo_queue = queue.Queue()
         self.total_loaded_combos = 0
-        self._umi_default_bac = ""  # لتخزين سنة الباك الخاصة بجلسة UMI
+        self._umi_default_bac = ""
 
         self.browser_status = []
         self.browser_show_buttons = []
@@ -362,7 +375,7 @@ class EduCheckerWindow(QMainWindow):
         self._diag_secrets = set()
 
         self.build_ui()
-        self.diagnostic("system", "startup", python=sys.version.split()[0], os=platform.platform())
+        self.diagnostic("system", "startup", {"python": sys.version.split()[0], "os": platform.platform()})
         self.log("Edu Checker Pro initialized successfully (IDLE State).")
 
     def panel(self, layout=None):
@@ -377,8 +390,10 @@ class EduCheckerWindow(QMainWindow):
                 text = text.replace(secret, "[REDACTED]")
         return text
 
-    def diagnostic(self, component, event, **fields):
+    def diagnostic(self, component, event, fields=None):
         try:
+            if fields is None:
+                fields = {}
             entry = {
                 "time": datetime.now().astimezone().isoformat(timespec="milliseconds"),
                 "component": component, "event": event,
@@ -421,7 +436,7 @@ class EduCheckerWindow(QMainWindow):
                 os.startfile(str(self._diag_path))
 
     def log(self, message):
-        self.diagnostic("checker", "log", message=message)
+        self.diagnostic("checker", "log", {"message": message})
         self.logs.appendPlainText(f"[{datetime.now():%H:%M:%S}]  {message}")
 
     def build_ui(self):
@@ -733,27 +748,30 @@ class EduCheckerWindow(QMainWindow):
                 continue
             parts = [p.strip() for p in line.split(":") if p.strip()]
             
-            if len(parts) >= 4:
-                cne, cni, dob, bac = parts[0], parts[1], parts[2], parts[3]
-                if not bac and umi_default_bac:
-                    bac = umi_default_bac
-                if cne:
-                    self.combo_queue.put((cne, cni, dob, bac))
-                    valid_count += 1
+            cne, cni, dob, bac = "", "", "", ""
+            
+            if len(parts) == 2:
+                cne = parts[0]
+                dob = parts[1]
             elif len(parts) == 3:
-                cne, cni, dob = parts[0], parts[1], parts[2]
-                bac = umi_default_bac if umi_default_bac else ""
-                if cne:
-                    self.combo_queue.put((cne, cni, dob, bac))
-                    valid_count += 1
-            elif len(parts) == 2:
-                cne, dob = parts[0], parts[1]
-                bac = umi_default_bac if umi_default_bac else ""
-                if cne:
-                    self.combo_queue.put((cne, "", dob, bac))
-                    valid_count += 1
+                cne = parts[0]
+                cni = parts[1]
+                dob = parts[2]
+            elif len(parts) >= 4:
+                cne = parts[0]
+                cni = parts[1]
+                dob = parts[2]
+                bac = parts[3]
+            
+            if selected_uni == "UMI" and not bac:
+                bac = umi_default_bac
+            
+            if cne:
+                self.combo_queue.put((cne, cni, dob, bac))
+                valid_count += 1
                     
         self.total_loaded_combos = valid_count
+        self.diagnostic("checker", "combos_loaded", {"count": valid_count, "university": selected_uni})
         self.log(f"Loaded {valid_count} combos for [{selected_uni}] from source file.")
         self.loaded_label.setText(f"Loaded: {valid_count}")
         self.update_results_header_display()
@@ -782,7 +800,6 @@ class EduCheckerWindow(QMainWindow):
             QMessageBox.warning(self, "University Selection Required", "⚠️ Please select a valid University Engine from the dropdown menu before starting!")
             return
 
-        # إدراج نافذة الإشعار الخاصة بـ UMI وحدها عند الضغط على START
         if selected_uni == "UMI":
             default_bac, ok = QInputDialog.getText(
                 self, "UMI Session Baccalaureate Year", 
@@ -790,7 +807,7 @@ class EduCheckerWindow(QMainWindow):
                 QLineEdit.Normal, "2022"
             )
             if not ok:
-                return  # إلغاء التشغيل إذا ضغط المستخدم Cancel
+                return  
             self._umi_default_bac = default_bac.strip()
             self.log(f"[UMI SESSION] Default Baccalaureate Year set to: {self._umi_default_bac}")
         else:
@@ -946,6 +963,7 @@ class EduCheckerWindow(QMainWindow):
             worker.status_signal.connect(self.update_browser_status)
             worker.result_signal.connect(self.handle_result)
             worker.log_signal.connect(self.log)
+            worker.diag_signal.connect(self.diagnostic)
             worker.finished.connect(lambda w=worker: self.worker_finished(w))
             self.workers.append(worker)
             used_ids.add(browser_id)
@@ -966,7 +984,7 @@ class EduCheckerWindow(QMainWindow):
     def handle_result(self, cne, cni, status, detail):
         record = (cne, cni, status, detail)
         self.results.append(record)
-        self.diagnostic("checker", "result_received", cne=cne, status=status, detail=detail)
+        self.diagnostic("checker", "result_received", {"cne": cne, "status": status, "detail": detail})
 
         row = self.table.rowCount()
         self.table.insertRow(row)
@@ -1054,7 +1072,7 @@ class EduCheckerWindow(QMainWindow):
         for worker in self.workers:
             worker.stop()
         self.log("[STOP] Stop requested.")
-        self.diagnostic("checker", "stop_requested")
+        self.diagnostic("checker", "stop_requested", {})
 
     def restart(self):
         self.stop()
@@ -1097,7 +1115,7 @@ class EduCheckerWindow(QMainWindow):
         for worker in list(self.workers):
             if worker.isRunning():
                 worker.wait(2000)
-        self.diagnostic("system", "normal_exit", events=self._diag_count)
+        self.diagnostic("system", "normal_exit", {"events_count": self._diag_count})
         self._diagnostic_dir.cleanup()
         event.accept()
 

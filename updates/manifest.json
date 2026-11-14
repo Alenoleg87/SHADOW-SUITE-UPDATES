@@ -1,8 +1,8 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.22",
+  "version": "2.2.23",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.22",
+  "release_dir": "updates/releases/v2.2.23",
   "files": [
     {
       "path": "integrations/__init__.py",
@@ -11,6 +11,10 @@
     {
       "path": "integrations/browser_identity.py",
       "sha256": "c0cb086d77b1fa7d7aad7eee4005efc0c43b009d1954161d116ced1a8cdbcca6"
+    },
+    {
+      "path": "integrations/pass_manager.py",
+      "sha256": "66fb0b9d65a98193a64a0c44f539e200963dcc733daa062cacda61374a1de8b0"
     },
     {
       "path": "integrations/proxy_only_gui.py",
@@ -38,7 +42,7 @@
     },
     {
       "path": "integrations/uit.py",
-      "sha256": "2383aa3439c5d185fb6446e30c54ad95cca6b423cf115129bf8e8d38e9567241"
+      "sha256": "e96f69343df0d8bc0bff4041337dc9511eb47cee00e844fea0917d212a39cfbb"
     },
     {
       "path": "integrations/umi.py",
@@ -46,7 +50,7 @@
     },
     {
       "path": "integrations/ump.py",
-      "sha256": "645803fd41dfc8c47ea22fbd7d506bcccbec5204f95cd6b8768cd9b69aaab39c"
+      "sha256": "1888c9b19ab91669be41cb47fedc27f99445ddd7b00c7fd979b6325e9cf4a805"
     },
     {
       "path": "integrations/usmba.py",
@@ -78,7 +82,7 @@
     },
     {
       "path": "tools/edu_checker.py",
-      "sha256": "61ece67dba4cd4ddbf7e27b6fdb82a6a0764f5e03b5a3f55a9e54d870e667c7e"
+      "sha256": "b118ee09935d72a01b8806487846638a6769417b8eff9d043721906ec6cbb760"
     }
   ]
 }
