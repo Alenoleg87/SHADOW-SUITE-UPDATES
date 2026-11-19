@@ -1,8 +1,8 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.26",
+  "version": "2.2.27",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.26",
+  "release_dir": "updates/releases/v2.2.27",
   "files": [
     {
       "path": "integrations/__init__.py",
@@ -18,7 +18,7 @@
     },
     {
       "path": "integrations/pass_manager.py",
-      "sha256": "a252698bae16b6424a117f5e736b7f62b843e16298e4dc6b3985f56c0b728fed"
+      "sha256": "590b29b488e0de0712962ece4eeaba03bcc54e0392f7bf02f1edc9b1aadd3e09"
     },
     {
       "path": "integrations/proxy_only_gui.py",
