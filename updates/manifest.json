@@ -1,8 +1,8 @@
 {
   "app": "SHADOW-SUITE-PRO",
-  "version": "2.2.28",
+  "version": "2.2.29",
   "channel": "stable",
-  "release_dir": "updates/releases/v2.2.28",
+  "release_dir": "updates/releases/v2.2.29",
   "files": [
     {
       "path": "integrations/__init__.py",
@@ -46,7 +46,7 @@
     },
     {
       "path": "integrations/uit.py",
-      "sha256": "1ae06c103b3440bfd031624c6f48685903287cad1422f02608102e581d72b535"
+      "sha256": "03e415240d2c7488786cadb886a0d2b239ebdf479fd6cda2a2c57fdb540520f2"
     },
     {
       "path": "integrations/umi.py",

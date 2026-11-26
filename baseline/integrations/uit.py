@@ -203,14 +203,16 @@ class UITEngine:
                 has_success_msg = "succès" in body_text_final.lower() or "succès" in body_text_final_1.lower()
 
                 if extracted_email and has_success_msg:
+                    combo_result = f"{extracted_email}:{target_password}"
                     result_data["status"] = LoginState.LOGIN_OK
-                    result_data["extracted_email"] = extracted_email
+                    result_data["extracted_email"] = combo_result
                     # هاد التنسيق هو اللي غايخلي النتيجة تخرج مباشرة Email:Password بدون مساس بـ edu_checker.py
-                    result_data["detail"] = f"{extracted_email}:{target_password}"
+                    result_data["detail"] = combo_result
                 elif extracted_email:
+                    combo_result = f"{extracted_email}:{target_password}"
                     result_data["status"] = LoginState.LOGIN_OK
-                    result_data["extracted_email"] = extracted_email
-                    result_data["detail"] = f"{extracted_email}:{target_password}"
+                    result_data["extracted_email"] = combo_result
+                    result_data["detail"] = combo_result
                 else:
                     result_data["status"] = LoginState.LOGIN_ERROR
                     result_data["detail"] = "Failed at password change confirmation stage"
